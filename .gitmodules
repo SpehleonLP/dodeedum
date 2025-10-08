@@ -1,0 +1,3 @@
+[submodule "extensions/thirdparty/fx-gltf"]
+	path = extensions/thirdparty/fx-gltf
+	url = https://github.com/jessey-git/fx-gltf
