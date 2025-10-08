@@ -1,3 +1,6 @@
 [submodule "extensions/thirdparty/fx-gltf"]
 	path = extensions/thirdparty/fx-gltf
 	url = https://github.com/jessey-git/fx-gltf
+[submodule "thirdparty/delaunator-c"]
+	path = thirdparty/delaunator-c
+	url = https://github.com/SpehleonLP/delaunator-c

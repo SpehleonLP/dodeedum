@@ -34,7 +34,7 @@ struct Silhouette
 {
 	std::vector<glm::vec2>  points;
 	std::vector<uint32_t>   outline;
-	std::vector<uint32_t> delauny_triangulation; 
+	std::vector<glm::uvec3> delauny_triangulation; 
 	
 	double area{};
 	double weightedArea{}; // skinning weights

@@ -1,24 +1,39 @@
 #include "dodeedum.h"
-#include "Spehleon/dodeedum/src/dodeedum_project2d.h"
+#include "dodeedum_project2d.h"
 #include "dodeedum_quadtree.h"
 #include <algorithm>
 
-#ifndef DelaunatorPrecision
-#define DelaunatorPrecision 32
+#if DELAUNATOR_PRECISION != 32
+#error "hard coded with 32 precision... may be fixed later."
 #endif
 
-#include "delaunator-cpp/include/delaunator.hpp"
+#include "../thirdparty/delaunator-c/delaunator.h"
 
-using vec2 = glm::vec<2, delaunator::d_fp, glm::precision::highp>;
-static auto constexpr EPS = std::numeric_limits<delaunator::d_fp>::epsilon();
+using vec2 = glm::vec<2, d_fp, glm::precision::highp>;
+static auto constexpr EPS = std::numeric_limits<d_fp>::epsilon();
 
 static std::vector<vec2> GetAllPoints(DoDeeDum::ProjectedMesh const& d, DoDeeDum::QuadTree const& tree);
 static std::vector<float> GetAllWeights(std::vector<vec2> const& points, DoDeeDum::ProjectedMesh const& d, DoDeeDum::QuadTree const& tree);
-static std::vector<uint32_t> GetTriangulation(std::vector<vec2> & points, DoDeeDum::QuadTree const& tree, bool did_insert);
-static std::vector<std::vector<uint32_t>> ToEdgeLists(std::vector<uint32_t> const& triangles, uint32_t no_verts, bool only_outside);
+static std::vector<glm::uvec3> GetTriangulation(std::vector<vec2> & points, DoDeeDum::QuadTree const& tree, bool did_insert);
+static std::vector<std::vector<uint32_t>> ToEdgeLists(std::vector<glm::uvec3> const& triangles, uint32_t no_verts, bool only_outside);
 static std::vector<std::vector<uint32_t>> ToCliques(std::vector<std::vector<uint32_t>> const& edge_lists);
-static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> const& points, std::vector<float> const& weights, std::vector<uint32_t> const& triangles, std::vector<std::vector<uint32_t>> const& cliques, DoDeeDum::Options options);
+static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> const& points, std::vector<float> const& weights, std::vector<glm::uvec3> const& triangles, std::vector<std::vector<uint32_t>> const& cliques, DoDeeDum::Options options);
 
+    
+std::vector<glm::uvec3> Triangulate(std::vector<glm::vec2> const& points)
+{
+	std::vector<glm::uvec3> tris(delaunator_calculate_output_size(points.size()) / sizeof(glm::uvec3));
+	std::vector<uint8_t> scratch(delaunator_calculate_scratch_size(points.size()));
+
+	delaunator_t del;
+	delaunator_triangulate(&del, &points[0].x, points.size(),
+		&tris[0].x, sizeof(tris[0]) * tris.size(),
+		scratch.data(), scratch.size());
+		
+	
+	return tris;
+}
+    
 std::vector<DoDeeDum::Silhouette> DoDeeDum::GetSilhouettes(Mesh const& mesh, glm::mat4 const& projection, Options options, std::span<uint32_t> joints)
 {
 	ProjectedMesh proj(mesh, projection, joints);
@@ -143,19 +158,19 @@ struct Triangulation
 	std::vector<uint32_t> tris;
 };
 
-static std::vector<uint32_t> GetTriangulation(std::vector<vec2> & points, DoDeeDum::QuadTree const& tree, bool did_insert)
+static std::vector<glm::uvec3> GetTriangulation(std::vector<vec2> & points, DoDeeDum::QuadTree const& tree, bool did_insert)
 {
 	if(points.empty()) return {};
-	auto span = std::span<const delaunator::d_fp>(&points[0].x, points.size()*2);
-	auto triangles = std::move(delaunator::Delaunator(span).triangles);
+	
+	auto triangles = Triangulate(points);
 	
 	bool check_edge_lists = false;
 	
 	uint32_t N = points.size()-int(did_insert);
 	uint32_t write = 0u;
-	for(auto read = 0u; read < triangles.size(); read += 3)
+	for(auto read = 0u; read < triangles.size(); ++read)
 	{
-		glm::uvec3 tri{triangles[read+0], triangles[read+1], triangles[read+2] };
+		glm::uvec3 tri = triangles[read];
 			
 		vec2 const& v0 = points[tri.x*2];
 		vec2 const& v1 = points[tri.y*2];
@@ -176,12 +191,10 @@ static std::vector<uint32_t> GetTriangulation(std::vector<vec2> & points, DoDeeD
 		{
 			if(read != write)
 			{
-				triangles[write+0] = triangles[read+0];
-				triangles[write+1] = triangles[read+1];
-				triangles[write+2] = triangles[read+2];
+				triangles[write] = triangles[read];
 			}
 			
-			write += 3;
+			write += 1;
 		}
 	}
 	
@@ -192,9 +205,9 @@ static std::vector<uint32_t> GetTriangulation(std::vector<vec2> & points, DoDeeD
 		
 	std::unordered_map<uint64_t, std::vector<int>> edge_lists;
 	
-	for(auto read = 0u; read < triangles.size(); read += 3)
+	for(auto read = 0u; read < triangles.size(); ++read)
 	{
-		glm::uvec3 tri{triangles[read+0], triangles[read+1], triangles[read+2] };
+		glm::uvec3 tri{triangles[read] };
 		if(!(tri.x == N || tri.y == N || tri.z == N)) continue;
 		
 		for(int e = 0; e < 3; ++e)
@@ -207,7 +220,7 @@ static std::vector<uint32_t> GetTriangulation(std::vector<vec2> & points, DoDeeD
 			if(b == N)
 			{
 				uint64_t key = (uint64_t(a) << 32) | b;
-				edge_lists[key].push_back(read/3);
+				edge_lists[key].push_back(read);
 			}
 		}
 	}
@@ -229,7 +242,7 @@ static std::vector<uint32_t> GetTriangulation(std::vector<vec2> & points, DoDeeD
 	return GetTriangulation(points, tree, false);
 }
 
-static std::vector<std::vector<uint32_t>> ToEdgeLists(std::vector<uint32_t> const& triangles, uint32_t no_verts, bool only_outside)
+static std::vector<std::vector<uint32_t>> ToEdgeLists(const std::vector<glm::uvec3> &triangles, uint32_t no_verts, bool only_outside)
 {	
 	std::vector<std::vector<uint32_t>> v;
 	v.resize(no_verts);
@@ -237,9 +250,9 @@ static std::vector<std::vector<uint32_t>> ToEdgeLists(std::vector<uint32_t> cons
 	for(auto &a : v)
 		a.reserve(4);
 		
-	for(auto read = 0u; read < triangles.size(); read += 3)
+	for(auto read = 0u; read < triangles.size(); ++read)
 	{
-		glm::uvec3 tri{triangles[read+0], triangles[read+1], triangles[read+2] };
+		glm::uvec3 tri = triangles[read];
 		
 		v[tri.x].push_back(tri.y);
 		v[tri.x].push_back(tri.z);
@@ -320,7 +333,7 @@ static std::vector<std::vector<uint32_t>> ToCliques(std::vector<std::vector<uint
 	return r;
 }
 
-static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> const& points, std::vector<float> const& weights, std::vector<uint32_t> const& triangles, std::vector<std::vector<uint32_t>> const& cliques, DoDeeDum::Options options)
+static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> const& points, std::vector<float> const& weights, const std::vector<glm::uvec3> &triangles, std::vector<std::vector<uint32_t>> const& cliques, DoDeeDum::Options options)
 {
 	std::vector<uint32_t> index_to_clique;
 	std::vector<DoDeeDum::Silhouette> r(cliques.size());
@@ -332,9 +345,9 @@ static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> c
 			index_to_clique[c] = i;
 	}	
 		
-	for(auto read = 0u; read < triangles.size(); read += 3)
+	for(auto read = 0u; read < triangles.size(); ++read)
 	{
-		glm::uvec3 tri{triangles[read+0], triangles[read+1], triangles[read+2] };
+		glm::uvec3 tri = triangles[read];
 			
 		vec2 const& v0 = points[tri.x];
 		vec2 const& v1 = points[tri.y];
@@ -370,9 +383,9 @@ static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> c
 	
 	if(options & (DoDeeDum::GET_WEIGHTED_AREA_2ND_MOMENT|DoDeeDum::GET_AREA_2ND_MOMENT))
 	{
-		for(auto read = 0u; read < triangles.size(); read += 3)
+		for(auto read = 0u; read < triangles.size(); ++read)
 		{
-			glm::uvec3 tri{triangles[read+0], triangles[read+1], triangles[read+2]};
+			glm::uvec3 tri = triangles[read];
 				
 			vec2 const& v0 = points[tri.x];
 			vec2 const& v1 = points[tri.y];
