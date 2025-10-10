@@ -1,4 +1,4 @@
-#include "dodeedum_mesh.h"
+#include "../include/dodeedum_mesh.h"
 #include "glm/gtc/type_precision.hpp"
 #include <stdexcept>
 

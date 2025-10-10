@@ -1,7 +1,7 @@
 #ifndef DODEEDUM_QUADTREE_H
 #define DODEEDUM_QUADTREE_H
 
-#include "Spehleon/dodeedum/src/dodeedum_project2d.h"
+#include "dodeedum_project2d.h"
 #include <glm/vec2.hpp>
 #include <vector>
 #include <array>

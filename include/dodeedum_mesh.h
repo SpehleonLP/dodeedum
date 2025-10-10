@@ -8,6 +8,9 @@
 namespace DoDeeDum
 {
 
+struct Primitive;
+using Mesh = std::vector<Primitive>;
+
 struct Tri
 {
 	std::array<glm::dvec3, 3> positions;
@@ -24,6 +27,7 @@ struct Vert
 
 
 enum class AttribType : uint16_t {
+	UNDEFINED	   = 0,
 	BYTE           = 0x1400,  ///< Signed 8-bit integer
 	UNSIGNED_BYTE  = 0x1401,  ///< Unsigned 8-bit integer
 	SHORT          = 0x1402,  ///< Signed 16-bit integer
@@ -152,7 +156,6 @@ struct Primitive
     void for_each_vertex(F & func, uint32_t thread_id = 0, uint32_t no_threads = 1) const;
 };
 
-using Mesh = std::vector<Primitive>;
 
 template<typename F>
 void Primitive::for_each_tri(F & func, uint32_t thread_id, uint32_t no_threads) const

@@ -2,6 +2,8 @@
 #include "fx/gltf.h"
 #include <vector>
 
+namespace DoDeeDum
+{
 // Helper structure to hold glTF vertex attribute data for rintintin processing
 struct GLTFAttributeData {
 using ComponentType = fx::gltf::Accessor::ComponentType;
@@ -24,6 +26,8 @@ using Type = fx::gltf::Accessor::Type;
             type = accessor->type;
             count = accessor->count;
             
+            GetTypeSizeInBytes();
+            
             if (accessor->bufferView >= 0 && accessor->bufferView < static_cast<int32_t>(doc->bufferViews.size())) {
                 bufferView = &doc->bufferViews[accessor->bufferView];
                 if (bufferView->buffer >= 0 && bufferView->buffer < static_cast<int32_t>(doc->buffers.size())) {
@@ -43,7 +47,7 @@ using Type = fx::gltf::Accessor::Type;
 	{
 		switch(componentType)
 		{
-		default:							return 0;
+		default:							throw std::invalid_argument("componentType");
 		case ComponentType::Byte:			return 1;
 		case ComponentType::UnsignedByte:	return 1;
 		case ComponentType::Short:			return 2;
@@ -57,7 +61,7 @@ using Type = fx::gltf::Accessor::Type;
 	{
 		switch(type)
 		{
-		default:			return 0;
+		default:			throw std::invalid_argument("type");
 		case Type::Scalar:	return 1;
 		case Type::Vec2:	return 2;
 		case Type::Vec3:	return 3;
@@ -75,9 +79,11 @@ using Type = fx::gltf::Accessor::Type;
 	inline uint32_t byteLength() const { return GetTypeSizeInBytes(type, componentType) * count; }
 };
 
+}
+
 static DoDeeDum::MeshAttrib MeshAttrib_Factory(fx::gltf::Document const& doc, uint32_t accessor)
 {
-	GLTFAttributeData gltfData(&doc, accessor);
+	DoDeeDum::GLTFAttributeData gltfData(&doc, accessor);
     if (!gltfData.isValid()) {
         throw std::runtime_error("Invalid glTF attribute data");
     }
@@ -92,7 +98,7 @@ static DoDeeDum::MeshAttrib MeshAttrib_Factory(fx::gltf::Document const& doc, ui
     if (attrib.stride == 0) {
         // If stride is 0, it means tightly packed
         attrib.stride = static_cast<unsigned short>(
-            gltfData.GetTypeSizeInBytes() * attrib.size
+            gltfData.GetComponentSizeInBytes() * attrib.size
         );
     }
     attrib.offset = 0; // Already accounted for in the data pointer
@@ -139,7 +145,7 @@ static DoDeeDum::Primitive Primitive_Factory(const fx::gltf::Document& document,
     
     // Handle indices
     if (primitive.indices >= 0) {
-        auto indexData = GLTFAttributeData(&document, primitive.indices);
+        auto indexData =  DoDeeDum::GLTFAttributeData(&document, primitive.indices);
         if (indexData.isValid()) {
             p.indices.index_array_buffer = indexData.data;
             p.indices.index_type = DoDeeDum::AttribType(indexData.accessor->componentType);
@@ -167,24 +173,32 @@ std::vector<DoDeeDum::Mesh> DoDeeDum::GetMeshes(fx::gltf::Document const& doc)
 	
 	for(auto i = 0u; i < r.size(); ++i)
 	{
-		auto & mesh = r[i];
-		mesh.reserve(doc.meshes[i].primitives.size());
-	
-		for(auto & primitive : doc.meshes[i].primitives)
-		{
-			switch(primitive.mode)
-			{
-			default:
-				break;
-				
-			case fx::gltf::Primitive::Mode::Triangles:
-			case fx::gltf::Primitive::Mode::TriangleStrip:
-			case fx::gltf::Primitive::Mode::TriangleFan:
-				mesh.push_back(Primitive_Factory(doc, primitive));
-				break;
-			}
-		}
+		r[i] = GetMesh(doc, i);
 	}
 	
 	return r;
+}
+
+DoDeeDum::Mesh DoDeeDum::GetMesh(fx::gltf::Document const& doc, int32_t i)
+{
+	Mesh mesh;
+	
+	mesh.reserve(doc.meshes[i].primitives.size());
+
+	for(auto & primitive : doc.meshes[i].primitives)
+	{
+		switch(primitive.mode)
+		{
+		default:
+			break;
+			
+		case fx::gltf::Primitive::Mode::Triangles:
+		case fx::gltf::Primitive::Mode::TriangleStrip:
+		case fx::gltf::Primitive::Mode::TriangleFan:
+			mesh.push_back(Primitive_Factory(doc, primitive));
+			break;
+		}
+	}
+	
+	return mesh;
 }

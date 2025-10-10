@@ -1,9 +1,11 @@
 #ifndef DODEEDUM_PROJECT2D_H
 #define DODEEDUM_PROJECT2D_H
+#include <filesystem>
 #include <glm/vec3.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/ext/vector_float2.hpp>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace DoDeeDum
@@ -42,6 +44,10 @@ struct ProjectedMesh
 	void for_each_intersection(uint32_t A, uint32_t B, F const& f) const;
 	
 	float get_value_at_point(glm::vec2 const& point, uint32_t tri) const;
+	
+	// Serialization functions
+	bool serialize(std::string const& filepath) const;
+	ProjectedMesh(std::filesystem::path const&);
 	
 private:	
 	void sort();

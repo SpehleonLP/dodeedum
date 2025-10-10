@@ -1,5 +1,7 @@
 #include "dodeedum_project2d.h"
 #include "dodeedum_mesh.h"
+#include <cstring>
+#include <fstream>
 #include <cfloat>
 
 namespace DoDeeDum
@@ -19,7 +21,7 @@ namespace DoDeeDum
 	}
 }
 
-
+DoDeeDum::ProjectedMesh::~ProjectedMesh() = default;
 
 DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, std::span<uint32_t> joints)
 {
@@ -58,7 +60,7 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 			max = glm::max(max, (glm::vec2&)vert);			
 		}
 		
-		p.indices.for_each_tri([&](glm::uvec3 const& tri)
+		p.indices.for_each_tri([&](glm::uvec3 const& tri) -> bool
 		{
 			glm::uvec3 new_tri = { vertex_mapping[tri.x], vertex_mapping[tri.y], vertex_mapping[tri.z] };
 			
@@ -66,6 +68,8 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 			{
 				tris.push_back(new_tri);
 			}
+			
+			return false;
 		});
 	}
 	
@@ -152,7 +156,7 @@ std::vector<std::vector<bool>>  DoDeeDum::GetSubsetMarks(Mesh const& mesh, std::
 		auto & w = weights[i];
 		bool set_something = false;
 		
-		p.indices.for_each_tri([&](glm::uvec3 const& tri)
+		p.indices.for_each_tri([&](glm::uvec3 const& tri) -> bool
 		{
 			if(w[tri.x] || w[tri.y] || w[tri.z])
 			{
@@ -165,6 +169,8 @@ std::vector<std::vector<bool>>  DoDeeDum::GetSubsetMarks(Mesh const& mesh, std::
 			{
 				set_everything = false;
 			}
+			
+			return false;
 		});	
 		
 		if(set_something)
@@ -311,25 +317,7 @@ static int clipPolygonAt1(vec3 poly[10], int count, vec3 w) {
     return outCount;
 }
 
-// Compute area of polygon in barycentric coordinates
-float polygonArea(vec3 poly[10], int count) {
-    if(count < 3) return 0.0;
-    
-    float area = 0.0;
-    for(int i = 1; i < count - 1; i++) {
-        vec3 v0 = poly[0];
-        vec3 v1 = poly[i];
-        vec3 v2 = poly[i + 1];
-        
-        vec3 e1 = v1 - v0;
-        vec3 e2 = v2 - v0;
-        area += length(cross(e1, e2)) * 0.5;
-    }
-    
-    return area;
-}
-
-float average_weight(vec3 w) {
+float DoDeeDum::GetAverageWeight(vec3 w) {
     // All weights >= 1: fully saturated
     if(w.x >= 1.0 && w.y >= 1.0 && w.z >= 1.0) return 1.0;
     
@@ -381,4 +369,60 @@ float average_weight(vec3 w) {
     }
     
     return weightedSum / totalArea;
+}
+
+bool DoDeeDum::ProjectedMesh::serialize(std::string const& filepath) const
+{
+	std::ofstream file(filepath, std::ios::binary);
+	if (!file.is_open())
+		return false;
+
+	// Write header
+	char header[8] = "PMESH01"; // Version 01
+	file.write(header, 8);
+
+	// Write min/max bounds
+	file.write(reinterpret_cast<char const*>(&min), sizeof(glm::vec2));
+	file.write(reinterpret_cast<char const*>(&max), sizeof(glm::vec2));
+
+	// Write point count and points
+	uint64_t point_count = points.size();
+	file.write(reinterpret_cast<char const*>(&point_count), sizeof(uint64_t));
+	file.write(reinterpret_cast<char const*>(points.data()), point_count * sizeof(glm::vec3));
+
+	// Write triangle count and triangles
+	uint64_t tri_count = tris.size();
+	file.write(reinterpret_cast<char const*>(&tri_count), sizeof(uint64_t));
+	file.write(reinterpret_cast<char const*>(tris.data()), tri_count * sizeof(glm::uvec3));
+
+	return file.good();
+}
+
+DoDeeDum::ProjectedMesh::ProjectedMesh(std::filesystem::path const& filepath)
+{
+	std::ifstream file(filepath, std::ios::binary);
+	if (!file.is_open())
+		return;
+
+	// Read and verify header
+	char header[8];
+	file.read(header, 8);
+	if (std::strncmp(header, "PMESH01", 7) != 0)
+		return;
+
+	// Read min/max bounds
+	file.read(reinterpret_cast<char*>(&min), sizeof(glm::vec2));
+	file.read(reinterpret_cast<char*>(&max), sizeof(glm::vec2));
+
+	// Read point count and points
+	uint64_t point_count;
+	file.read(reinterpret_cast<char*>(&point_count), sizeof(uint64_t));
+	points.resize(point_count);
+	file.read(reinterpret_cast<char*>(points.data()), point_count * sizeof(glm::vec3));
+
+	// Read triangle count and triangles
+	uint64_t tri_count;
+	file.read(reinterpret_cast<char*>(&tri_count), sizeof(uint64_t));
+	tris.resize(tri_count);
+	file.read(reinterpret_cast<char*>(tris.data()), tri_count * sizeof(glm::uvec3));
 }

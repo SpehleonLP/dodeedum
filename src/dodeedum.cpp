@@ -37,6 +37,8 @@ std::vector<glm::uvec3> Triangulate(std::vector<glm::vec2> const& points)
 std::vector<DoDeeDum::Silhouette> DoDeeDum::GetSilhouettes(Mesh const& mesh, glm::mat4 const& projection, Options options, std::span<uint32_t> joints)
 {
 	ProjectedMesh proj(mesh, projection, joints);
+	
+	proj.serialize("/home/anyuser/claude/dodeedum/tests/batto.test_data");
 	DoDeeDum::QuadTree quadtree(proj);
 	
 	std::vector<DoDeeDum::Silhouette> r;
