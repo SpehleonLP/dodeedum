@@ -31,38 +31,90 @@ bool AABB2D::contains_triangle(glm::vec2 const& v0, glm::vec2 const& v1, glm::ve
 	         tri_max_y < min.y || tri_min_y > max.y);
 }
 
-// QuadTree implementation
-QuadTree::QuadTree(ProjectedMesh const& mesh, uint32_t max_depth)
-	: mesh_(mesh)
-	, root_idx_(INVALID_INDEX)
-	, max_depth_(max_depth)
+bool point_in_triangle(glm::dvec2 const& p, glm::dvec2 const& v0, glm::dvec2 const& v1, glm::dvec2 const& v2)
 {
-	if (mesh_.tris.empty())
+	auto denom = (v1.y - v2.y) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.y - v2.y);
+	
+	if (denom == 0)
+		return false;  // Degenerate triangle
+	
+	auto a = ((v1.y - v2.y) * (p.x - v2.x) + (v2.x - v1.x) * (p.y - v2.y)) / denom;
+	auto b = ((v2.y - v0.y) * (p.x - v2.x) + (v0.x - v2.x) * (p.y - v2.y)) / denom;
+	auto c = 1.0 - a - b;
+	
+	// Use epsilon tolerance for boundary cases
+	return a >= 0 && a <= 1.0 && 
+	       b >= 0 && b <= 1.0 && 
+	       c >= 0 && c <= 1.0;
+}
+
+bool segments_intersect(glm::dvec2 const& a0, glm::dvec2 const& a1, glm::dvec2 const& b0, glm::dvec2 const& b1)
+{
+	auto sign = [](float x) { return (x > 0.0f) - (x < 0.0f); };
+
+	auto ccw = [](glm::dvec2 const& A, glm::dvec2 const& B, glm::dvec2 const& C) {
+		return (C.y - A.y) * (B.x - A.x) - (B.y - A.y) * (C.x - A.x);
+	};
+
+	auto d1 = ccw(b0, b1, a0);
+	auto d2 = ccw(b0, b1, a1);
+	auto d3 = ccw(a0, a1, b0);
+	auto d4 = ccw(a0, a1, b1);
+
+	if (sign(d1) != sign(d2) && sign(d3) != sign(d4))
+		return true;
+
+	// Check for collinear overlap
+	if (std::abs(d1) < 1e-10 && std::abs(d2) < 1e-10)
+	{
+		// Both segments on same line, check if they overlap
+		auto min_ax = std::min(a0.x, a1.x);
+		auto max_ax = std::max(a0.x, a1.x);
+		auto min_bx = std::min(b0.x, b1.x);
+		auto max_bx = std::max(b0.x, b1.x);
+
+		return max_ax >= min_bx && max_bx >= min_ax;
+	}
+
+	return false;
+}
+
+
+
+void QuadTree::build()
+{
+	if(root_idx_ != INVALID_INDEX)
+		return;
+
+	total_items_ = get_polygon_count();
+	if (total_items_ == 0)
 		return;
 
 	// Estimate node count: worst case is (4^(depth+1) - 1) / 3 for a full quadtree
 	// More conservative: 4^(depth+1) to allow for some overhead
+	uint32_t probable_depth = std::ceil(log2(total_items_)/2);
 	size_t estimated_nodes = 1;
-	for (uint32_t i = 0; i <= max_depth_; ++i)
+	for (uint32_t i = 0; i <= probable_depth; ++i)
 	{
 		estimated_nodes *= 4;
 	}
-	estimated_nodes = std::min(estimated_nodes, mesh_.tris.size() * 2); // Cap by triangle count
-	nodes_.reserve(estimated_nodes);
+	nodes_.reserve(estimated_nodes/2.8);
 
 	// Build triangle index list
 	// Since tris are sorted by least maximum, we can pass them in order
-	std::vector<uint32_t> all_indices(mesh_.tris.size());
-	for (uint32_t i = 0; i < mesh_.tris.size(); ++i)
+	std::vector<uint32_t> all_indices(total_items_);
+	std::vector<glm::vec2> max_size_memo(total_items_);
+	
+	for (uint32_t i = 0; i < total_items_; ++i)
+	{
 		all_indices[i] = i;
-
-	// Compute root bounds
-	AABB2D root_bounds = compute_bounds(all_indices);
+		max_size_memo[i] = get_polygon_bounds(i).max;
+	}
 
 	root_idx_ = allocate_node();
-	nodes_[root_idx_].bounds = root_bounds;
-
-	build_tree(root_idx_, all_indices, 0);
+	
+	std::vector<std::pair<glm::vec2, uint32_t>> scratch;
+	build_tree(root_idx_, max_size_memo, scratch, all_indices, 0);
 }
 
 uint32_t QuadTree::allocate_node()
@@ -71,374 +123,101 @@ uint32_t QuadTree::allocate_node()
 	nodes_.emplace_back();
 	return idx;
 }
-
-void QuadTree::build_tree(uint32_t node_idx, std::vector<uint32_t> const& tri_indices, uint32_t depth)
-{
-	// Stop subdividing if we've reached max depth or have few enough triangles
-	if (depth >= max_depth_ || tri_indices.size() <= MAX_TRIS_PER_NODE)
-	{
-		nodes_[node_idx].is_leaf = true;
-		// Store up to 4 triangle indices
-		for (size_t i = 0; i < std::min(tri_indices.size(), size_t(MAX_TRIS_PER_NODE)); ++i)
-		{
-			nodes_[node_idx].data[i] = tri_indices[i];
-		}
-		return;
-	}
-
-	// Create children
-	subdivide(node_idx);
-
-	// Distribute triangles to children
-	std::array<std::vector<uint32_t>, 4> child_tris;
-
-	// Get child indices (must do this AFTER subdivide, and avoid keeping node reference)
-	std::array<uint32_t, 4> child_indices;
-	for (int i = 0; i < 4; ++i)
-	{
-		child_indices[i] = nodes_[node_idx].data[i];
-	}
-
-	// Exploit sorted order: triangles are sorted by least maximum vertex index
-	// This means spatially coherent triangles tend to be grouped together
-	for (uint32_t tri_idx : tri_indices)
-	{
-		AABB2D tri_bounds = compute_triangle_bounds(tri_idx);
-
-		// Check which quadrants this triangle intersects
-		for (int i = 0; i < 4; ++i)
-		{
-			uint32_t child_idx = child_indices[i];
-			if (child_idx != INVALID_INDEX && nodes_[child_idx].bounds.intersects(tri_bounds))
-			{
-				child_tris[i].push_back(tri_idx);
-			}
-		}
-	}
-
-	// Check if subdivision made progress: if all/most children have the same triangles,
-	// subdivision isn't helping (degenerate case with overlapping/identical triangles)
-	size_t max_child_size = 0;
-	for (int i = 0; i < 4; ++i)
-	{
-		max_child_size = std::max(max_child_size, child_tris[i].size());
-	}
-
-	// If the largest child has nearly all the triangles, subdivision didn't help
-	// Just make this a leaf and distribute triangles randomly among the 4 slots
-	if (max_child_size >= tri_indices.size() * 0.9)
-	{
-		// Degenerate case: triangles are overlapping/identical, can't subdivide effectively
-		nodes_[node_idx].data.fill(INVALID_INDEX);
-		nodes_[node_idx].is_leaf = true;
-
-		// Store up to 4 triangles randomly
-		for (size_t i = 0; i < std::min(tri_indices.size(), size_t(MAX_TRIS_PER_NODE)); ++i)
-		{
-			nodes_[node_idx].data[i] = tri_indices[i];
-		}
-		return;
-	}
-
-	// Recursively build children
-	bool all_empty = true;
-	for (int i = 0; i < 4; ++i)
-	{
-		if (!child_tris[i].empty())
-		{
-			build_tree(child_indices[i], child_tris[i], depth + 1);
-			all_empty = false;
-		}
-	}
-
-	// If all children are empty, this should remain a leaf
-	if (all_empty)
-	{
-		nodes_[node_idx].data.fill(INVALID_INDEX);
-		nodes_[node_idx].is_leaf = true;
-		// Store original triangles if any
-		for (size_t i = 0; i < std::min(tri_indices.size(), size_t(MAX_TRIS_PER_NODE)); ++i)
-		{
-			nodes_[node_idx].data[i] = tri_indices[i];
-		}
-	}
-	else
-	{
-		nodes_[node_idx].is_leaf = false;
-	}
-}
-
-void QuadTree::subdivide(uint32_t node_idx)
-{
-	// Copy bounds before allocating nodes (allocation can invalidate node reference)
-	AABB2D bounds = nodes_[node_idx].bounds;
-	glm::vec2 center = (bounds.min + bounds.max) * 0.5f;
-
-	// NW
-	uint32_t nw_idx = allocate_node();
-	nodes_[nw_idx].bounds = {{bounds.min.x, center.y}, {center.x, bounds.max.y}};
-
-	// NE
-	uint32_t ne_idx = allocate_node();
-	nodes_[ne_idx].bounds = {{center.x, center.y}, bounds.max};
-
-	// SW
-	uint32_t sw_idx = allocate_node();
-	nodes_[sw_idx].bounds = {bounds.min, center};
-
-	// SE
-	uint32_t se_idx = allocate_node();
-	nodes_[se_idx].bounds = {{center.x, bounds.min.y}, {bounds.max.x, center.y}};
-
-	// Update parent node after all allocations (to avoid dangling reference)
-	nodes_[node_idx].data[0] = nw_idx;
-	nodes_[node_idx].data[1] = ne_idx;
-	nodes_[node_idx].data[2] = sw_idx;
-	nodes_[node_idx].data[3] = se_idx;
-}
-
-void QuadTree::find_edge_neighbors(std::vector<uint32_t> & neighbors, uint32_t tri_index) const
-{
-	if (tri_index >= mesh_.tris.size())
-		return;
-
-	AABB2D tri_bounds = get_triangle_bounds(tri_index);
-
-	// Query a slightly expanded region to catch edge-adjacent triangles
-	float epsilon = 0.0001f;
-	tri_bounds.min.x -= epsilon;
-	tri_bounds.min.y -= epsilon;
-	tri_bounds.max.x += epsilon;
-	tri_bounds.max.y += epsilon;
-
-	std::vector<uint32_t> candidates;
-	candidates.reserve(neighbors.size());
-	query_region(candidates, tri_bounds);
-
-	for (uint32_t candidate : candidates)
-	{
-		if (candidate != tri_index && triangles_share_edge(tri_index, candidate))
-		{
-			neighbors.push_back(candidate);
-		}
-	}
-}
-
-void QuadTree::find_overlapping(std::vector<uint32_t> & overlapping, uint32_t tri_index) const
-{
-	if (tri_index >= mesh_.tris.size())
-		return;
-
-	AABB2D tri_bounds = get_triangle_bounds(tri_index);
-	std::vector<uint32_t> candidates;
-	candidates.reserve(overlapping.size());
-	query_region(candidates, tri_bounds);
-
-	for (uint32_t candidate : candidates)
-	{
-		if (candidate != tri_index && triangles_intersect(tri_index, candidate))
-		{
-			overlapping.push_back(candidate);
-		}
-	}
-}
-
-void QuadTree::query_region(std::vector<uint32_t> & dst, AABB2D const& region) const
-{
-	if (root_idx_ != INVALID_INDEX)
-		query_region_recursive(root_idx_, region, dst);
-}
-
-void QuadTree::query_point(std::vector<uint32_t> & dst, glm::vec2 const& point, float radius) const
-{
-	AABB2D region;
-	region.min = {point.x - radius, point.y - radius};
-	region.max = {point.x + radius, point.y + radius};
-	return query_region(dst, region);
-}
-
-
-AABB2D QuadTree::get_triangle_bounds(uint32_t tri_index) const
-{
-	return compute_triangle_bounds(tri_index);
-}
-
-void QuadTree::query_region_recursive(uint32_t node_idx, AABB2D const& region, std::vector<uint32_t>& results) const
-{
-	if (node_idx == INVALID_INDEX)
-		return;
-
-	std::vector<int> stack;
-	stack.reserve(max_depth_*4);
 	
-	stack.push_back(node_idx);
-	
-	while(stack.size())
+void QuadTree::build_tree(uint32_t node_idx, std::vector<glm::vec2> const& max_size_memo, std::vector<std::pair<glm::vec2, uint32_t>> & scratch, std::span<const uint32_t> tri_indices, uint32_t depth)
+{
+	if(tri_indices.size() <= 4)
 	{
-		node_idx = stack.back();
-		stack.pop_back();
+		auto & n = nodes_[node_idx];
+		n.data.fill(INVALID_INDEX);
+		n.is_leaf = true;
 	
-		Node const& node = nodes_[node_idx];
+		for(auto i = 0u; i < tri_indices.size(); ++i)
+		{
+			n.data[i] = tri_indices[i];
+		}
 	
-		if (!node.bounds.intersects(region))
-			continue;
+		n.bounds = compute_bounds(tri_indices);
+        max_depth_ = std::max(max_depth_, depth);
+        return;
+	}
+
+	auto CompareX_Dominant = [](std::pair<glm::vec2, uint32_t> & a, std::pair<glm::vec2, uint32_t> & b)
+	{
+		return a.first != b.first? 
+			(a.first.x != b.first.x?
+				a.first.x < a.first.x 
+			  : a.first.y < b.first.y)
+			: a.second < b.second;
+	};
+
+	auto CompareY_Dominant = [](std::pair<glm::vec2, uint32_t> & a, std::pair<glm::vec2, uint32_t> & b)
+	{
+		return a.first != b.first? 
+			(a.first.y != b.first.y?
+				a.first.y < a.first.y 
+			  : a.first.x < b.first.x)
+			: a.second < b.second;
+	};
+	
+	auto Split = [&](std::span<const uint32_t> span) -> std::vector<uint32_t>
+	{
+	// reuse because malloc = expensive.
+		scratch.resize(span.size());
 		
-		if(node.is_leaf == false)
+		for(auto i = 0u; i < span.size(); ++i)
 		{
-			// Recurse into children
-			for (uint32_t i = 0; i < 4; ++i)
-			{
-				if(node.data[i] != INVALID_INDEX)
-					stack.push_back(node.data[i]);
-			}
+			scratch[i] = {max_size_memo[span[i]], span[i]};
+		}
+		
+		std::sort(scratch.begin(), scratch.end(), CompareX_Dominant);
+		
+		auto top = std::span{ scratch.data(), scratch.size()/2 };
+		auto bottom = std::span{ top.end(), scratch.size() - top.size() };
+	
+		std::sort(top.begin(), top.end(), CompareY_Dominant);
+		std::sort(bottom.begin(), bottom.end(), CompareY_Dominant);
+		
+		std::vector<uint32_t> indices(span.size());
+		for(auto i = 0u; i < span.size(); ++i)
+		{
+			indices[i] = scratch[i].second;
+		}
+		
+		return indices;
+	};
+	
+	// Exploit sorted order: triangles are sorted by least maximum vertex index
+	// AND: verticies are sorted by Y 
+	auto top = Split({ tri_indices.data(), tri_indices.size()/2 });
+	auto bottom = Split({ tri_indices.data() + tri_indices.size()/2, tri_indices.size() - tri_indices.size()/2 });
+	
+	std::array<std::span<uint32_t>, 4> children;
+	children[0] = { top.data(), top.size()/2 };
+	children[1] = { children[0].end(), top.size() - children[0].size() };
+	children[2] = { bottom.data(), bottom.size()/2 };
+	children[3] = { children[2].end(), bottom.size() - children[2].size() };
+	
+	for(auto i = 0u; i < 4; ++i)
+	{
+		auto idx = allocate_node();
+		nodes_[node_idx].data[i] = idx;
+		
+		build_tree(idx, max_size_memo, scratch, children[i], depth+1);
+		
+		if(i == 0)
+		{
+			nodes_[node_idx].bounds = nodes_[idx].bounds;
+			nodes_[node_idx].is_leaf = false;
 		}
 		else
 		{
-			// Check each triangle in this leaf
-			for (uint32_t i = 0; i < MAX_TRIS_PER_NODE; ++i)
-			{
-				uint32_t tri_idx = node.data[i];
-				if (tri_idx == INVALID_INDEX)
-					break; // No more triangles in this leaf
-	
-				AABB2D tri_bounds = compute_triangle_bounds(tri_idx);
-				if (tri_bounds.intersects(region))
-				{
-					results.push_back(tri_idx);
-				}
-			}	
+			nodes_[node_idx].bounds.min = glm::min(nodes_[node_idx].bounds.min, nodes_[idx].bounds.min);
+			nodes_[node_idx].bounds.max = glm::max(nodes_[node_idx].bounds.max, nodes_[idx].bounds.max);
 		}
 	}
 }
 
-bool QuadTree::triangles_share_edge(uint32_t tri_a, uint32_t tri_b) const
-{
-	auto const& t_a = mesh_.tris[tri_a];
-	auto const& t_b = mesh_.tris[tri_b];
-
-	// Get vertices
-	std::array<uint32_t, 3> verts_a = {t_a.x, t_a.y, t_a.z};
-	std::array<uint32_t, 3> verts_b = {t_b.x, t_b.y, t_b.z};
-
-	// Count shared vertices
-	int shared = 0;
-	for (uint32_t va : verts_a)
-	{
-		for (uint32_t vb : verts_b)
-		{
-			if (va == vb)
-			{
-				++shared;
-				break;
-			}
-		}
-	}
-
-	// Two triangles share an edge if they have exactly 2 shared vertices
-	return shared == 2;
-}
-
-bool QuadTree::triangles_intersect(uint32_t tri_a, uint32_t tri_b) const
-{
-	auto const& t_a = mesh_.tris[tri_a];
-	auto const& t_b = mesh_.tris[tri_b];
-
-	glm::vec2 const& a0 = mesh_.points[t_a.x];
-	glm::vec2 const& a1 = mesh_.points[t_a.y];
-	glm::vec2 const& a2 = mesh_.points[t_a.z];
-
-	glm::vec2 const& b0 = mesh_.points[t_b.x];
-	glm::vec2 const& b1 = mesh_.points[t_b.y];
-	glm::vec2 const& b2 = mesh_.points[t_b.z];
-
-	// Test if any vertex of one triangle is inside the other
-	if (point_in_triangle(a0, b0, b1, b2) ||
-	    point_in_triangle(a1, b0, b1, b2) ||
-	    point_in_triangle(a2, b0, b1, b2) ||
-	    point_in_triangle(b0, a0, a1, a2) ||
-	    point_in_triangle(b1, a0, a1, a2) ||
-	    point_in_triangle(b2, a0, a1, a2))
-	{
-		return true;
-	}
-
-	// Test if any edges intersect
-	std::array<std::pair<glm::vec2, glm::vec2>, 3> edges_a = {
-		{{a0, a1}, {a1, a2}, {a2, a0}}
-	};
-	std::array<std::pair<glm::vec2, glm::vec2>, 3> edges_b = {
-		{{b0, b1}, {b1, b2}, {b2, b0}}
-	};
-
-	for (auto const& edge_a : edges_a)
-	{
-		for (auto const& edge_b : edges_b)
-		{
-			if (segments_intersect(edge_a.first, edge_a.second, edge_b.first, edge_b.second))
-			{
-				return true;
-			}
-		}
-	}
-
-	return false;
-}
-
-bool QuadTree::point_in_triangle(glm::vec2 const& p, glm::vec2 const& v0, glm::vec2 const& v1, glm::vec2 const& v2) const
-{
-	// Barycentric coordinate method
-	float denom = (v1.y - v2.y) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.y - v2.y);
-	if (std::abs(denom) < 1e-10f)
-		return false;
-
-	float a = ((v1.y - v2.y) * (p.x - v2.x) + (v2.x - v1.x) * (p.y - v2.y)) / denom;
-	float b = ((v2.y - v0.y) * (p.x - v2.x) + (v0.x - v2.x) * (p.y - v2.y)) / denom;
-	float c = 1.0f - a - b;
-
-	return a >= 0.0f && a <= 1.0f && b >= 0.0f && b <= 1.0f && c >= 0.0f && c <= 1.0f;
-}
-
-bool QuadTree::point_in_triangle(glm::vec2 const& p, uint32_t tri) const
-{
-	auto const& t_a = mesh_.tris[tri];
-	
-	glm::vec2 const&  a0 = mesh_.points[t_a.x];
-	glm::vec2 const&  a1 = mesh_.points[t_a.y];
-	glm::vec2 const&  a2 = mesh_.points[t_a.z];
-
-	return point_in_triangle(p, a0, a1, a2);
-}
-
-bool QuadTree::segments_intersect(glm::vec2 const& a0, glm::vec2 const& a1, glm::vec2 const& b0, glm::vec2 const& b1) const
-{
-	auto sign = [](float x) { return (x > 0.0f) - (x < 0.0f); };
-
-	auto ccw = [](glm::vec2 const& A, glm::vec2 const& B, glm::vec2 const& C) {
-		return (C.y - A.y) * (B.x - A.x) - (B.y - A.y) * (C.x - A.x);
-	};
-
-	float d1 = ccw(b0, b1, a0);
-	float d2 = ccw(b0, b1, a1);
-	float d3 = ccw(a0, a1, b0);
-	float d4 = ccw(a0, a1, b1);
-
-	if (sign(d1) != sign(d2) && sign(d3) != sign(d4))
-		return true;
-
-	// Check for collinear overlap
-	if (std::abs(d1) < 1e-10f && std::abs(d2) < 1e-10f)
-	{
-		// Both segments on same line, check if they overlap
-		float min_ax = std::min(a0.x, a1.x);
-		float max_ax = std::max(a0.x, a1.x);
-		float min_bx = std::min(b0.x, b1.x);
-		float max_bx = std::max(b0.x, b1.x);
-
-		return max_ax >= min_bx && max_bx >= min_ax;
-	}
-
-	return false;
-}
 
 AABB2D QuadTree::compute_bounds(std::span<uint32_t const> tri_indices) const
 {
@@ -448,36 +227,14 @@ AABB2D QuadTree::compute_bounds(std::span<uint32_t const> tri_indices) const
 
 	for (uint32_t tri_idx : tri_indices)
 	{
-		auto const& tri = mesh_.tris[tri_idx];
+		auto b = get_polygon_bounds(tri_idx);
 
-		for (uint32_t vert_idx : {tri.x, tri.y, tri.z})
-		{
-			auto const& point = mesh_.points[vert_idx];
-			bounds.min.x = std::min(bounds.min.x, point.x);
-			bounds.min.y = std::min(bounds.min.y, point.y);
-			bounds.max.x = std::max(bounds.max.x, point.x);
-			bounds.max.y = std::max(bounds.max.y, point.y);
-		}
+		bounds.min = glm::min(bounds.min, b.min);
+		bounds.max = glm::max(bounds.max, b.max);
 	}
 
 	return bounds;
 }
 
-AABB2D QuadTree::compute_triangle_bounds(uint32_t tri_index) const
-{
-	auto const& tri = mesh_.tris[tri_index];
-
-	AABB2D bounds;
-	bounds.min = {
-		std::min({mesh_.points[tri.x].x, mesh_.points[tri.y].x, mesh_.points[tri.z].x}),
-		std::min({mesh_.points[tri.x].y, mesh_.points[tri.y].y, mesh_.points[tri.z].y})
-	};
-	bounds.max = {
-		std::max({mesh_.points[tri.x].x, mesh_.points[tri.y].x, mesh_.points[tri.z].x}),
-		std::max({mesh_.points[tri.x].y, mesh_.points[tri.y].y, mesh_.points[tri.z].y})
-	};
-
-	return bounds;
-}
 
 }

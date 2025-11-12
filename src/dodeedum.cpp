@@ -1,453 +1,306 @@
 #include "dodeedum.h"
+#include "dodeedum_mesh.h"
+#include "dodeedum_meshedges.h"
 #include "dodeedum_project2d.h"
 #include "dodeedum_quadtree.h"
+#include <fstream>
 #include <algorithm>
+#include <atomic>
 
-#if DELAUNATOR_PRECISION != 32
-#error "hard coded with 32 precision... may be fixed later."
+#include "../thirdparty/CDT/CDT/include/CDT.h"
+
+#ifndef __unused__
+#if defined(__GNUC__) || defined(__clang__)
+#define __unused __attribute__((unused))
+#else
+#define __unused
+#endif
 #endif
 
-#include "../thirdparty/delaunator-c/delaunator.h"
 
-using vec2 = glm::vec<2, d_fp, glm::precision::highp>;
-static auto constexpr EPS = std::numeric_limits<d_fp>::epsilon();
+static DoDeeDum::Silhouette GetSilhouette(std::vector<glm::vec2> && points, std::span<uint32_t> edges, std::span<std::pair<uint32_t, uint32_t> > loops, bool get_second_moment);
+static DoDeeDum::Silhouette GetSilhouette(std::vector<glm::vec2> && points, std::vector<glm::uvec3> && triangulation, bool get_second_moment);
 
-static std::vector<vec2> GetAllPoints(DoDeeDum::ProjectedMesh const& d, DoDeeDum::QuadTree const& tree);
-static std::vector<float> GetAllWeights(std::vector<vec2> const& points, DoDeeDum::ProjectedMesh const& d, DoDeeDum::QuadTree const& tree);
-static std::vector<glm::uvec3> GetTriangulation(std::vector<vec2> & points, DoDeeDum::QuadTree const& tree, bool did_insert);
-static std::vector<std::vector<uint32_t>> ToEdgeLists(std::vector<glm::uvec3> const& triangles, uint32_t no_verts, bool only_outside);
-static std::vector<std::vector<uint32_t>> ToCliques(std::vector<std::vector<uint32_t>> const& edge_lists);
-static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> const& points, std::vector<float> const& weights, std::vector<glm::uvec3> const& triangles, std::vector<std::vector<uint32_t>> const& cliques, DoDeeDum::Options options);
+static void __unused Export_Obj(std::filesystem::path const& p, std::span<glm::vec2> points, std::span<uint32_t> edges, std::span<std::pair<uint32_t, uint32_t> > loops);
 
-    
-std::vector<glm::uvec3> Triangulate(std::vector<glm::vec2> const& points)
-{
-	std::vector<glm::uvec3> tris(delaunator_calculate_output_size(points.size()) / sizeof(glm::uvec3));
-	std::vector<uint8_t> scratch(delaunator_calculate_scratch_size(points.size()));
+/// Get edge first vertex
+inline auto edge_get_v1(const std::pair<uint32_t, uint32_t>& e) { return std::min(e.first, e.second); }
+inline auto edge_get_v2(const std::pair<uint32_t, uint32_t>& e) { return std::max(e.first, e.second); }
 
-	delaunator_t del;
-	delaunator_triangulate(&del, &points[0].x, points.size(),
-		&tris[0].x, sizeof(tris[0]) * tris.size(),
-		scratch.data(), scratch.size());
-		
-	
-	return tris;
-}
-    
-std::vector<DoDeeDum::Silhouette> DoDeeDum::GetSilhouettes(Mesh const& mesh, glm::mat4 const& projection, Options options, std::span<uint32_t> joints)
-{
-	ProjectedMesh proj(mesh, projection, joints);
-	
-	proj.serialize("/home/anyuser/claude/dodeedum/tests/batto.test_data");
-	DoDeeDum::QuadTree quadtree(proj);
-	
-	std::vector<DoDeeDum::Silhouette> r;
-	
-	{
-		auto points = GetAllPoints(proj, quadtree);
-		bool added_center = false;
-		
-		if(options & INCLUDE_CENTER)
-		{
-			added_center = !quadtree.IsContained({0, 0});
-			
-			if(added_center)
-				points.push_back({0, 0});
-		}
-	
-		std::vector<float> weights;
-		
-		if(options & (GET_WEIGHTED_AREA|GET_WEIGHTED_AREA_2ND_MOMENT))
-			weights = GetAllWeights(points, proj, quadtree);
-		auto triangles = GetTriangulation(points, quadtree, added_center);
-		auto edge_list = ToEdgeLists(triangles, points.size()/2, false);
-		r = ::GetSilhouettes(points, weights, triangles, ToCliques(edge_list), options);
-	}
-	
-	if(options & GET_DELAUNY_PERIMITER)
-	{
-		for(auto & s : r)
-		{
-			s.delauny_triangulation = GetTriangulation(s.points, quadtree, false);
-		}
-	}
-	
-	return r;
-}
-
-static std::vector<vec2> GetAllPoints(DoDeeDum::ProjectedMesh const& d, DoDeeDum::QuadTree const& tree)
-{
-	std::vector<vec2> r;
-	
-	r.reserve(d.points.size()*2);
-	
-	for(auto i = 0u; i < d.points.size(); ++i)
-	{
-		r.push_back((glm::vec2&)d.points[i]);
-	}
-	
-	std::vector<uint32_t> p;
-	for(auto i = 0u; i < d.tris.size(); ++i)
-	{
-		p.clear();
-		tree.find_overlapping(p, i);
-		
-		for(auto & tri : p)
-		{
-			if(tri < i) continue;
-			
-			d.for_each_intersection(i, tri, [&](glm::vec2 point) -> bool
-			{
-				r.push_back(point);
-				return false;
-			});
-		}
-	}
-
-	float scale = std::min(d.max.x - d.min.x, d.max.y - d.min.y);
-	// make reasonable big so eps test is useful.
-	scale = scale == 0.0? 1.0 : (scale < 1.0? 1.0 / scale : 1.0);
-	
-	auto nan = std::nanf("");
-	
-	std::sort(r.begin(), r.end(), [&](auto &a, auto & b) { return a.y < b.y; });
-	 
-	uint32_t read = 0, write = 0;
-	for(; read < r.size(); ++read)
-	{
-		if(std::isnan(r[read].x)) continue;
-		
-		for(uint32_t j = read; j < r.size(); ++read)
-		{
-			if(std::fabs(r[read].y - r[j].y) > EPS)
-				break;
-			
-			// mark as duplicate.
-			if(std::fabs(r[read].x - r[j].x) < EPS)
-				r[j].x = nan;
-		}
-		
-		r[write++] = r[read];
-	}
-	
-	r.resize(write);
-	
-	return r;
-}
-
-static std::vector<float> GetAllWeights(std::vector<vec2> const& points, DoDeeDum::ProjectedMesh const& d, DoDeeDum::QuadTree const& tree)
-{
-	std::vector<float> r(points.size(), 0);
-	std::vector<uint32_t> p;
-	
-	for(auto i = 0u; i < points.size(); ++i)
-	{
-		p.clear();
-		tree.query_point(p, points[i], EPS);
-		
-		for(auto tri : p)
-			r[i] += d.get_value_at_point(points[i], tri);
-	}
-	
-	return r;
-}
-
-struct Triangulation
-{
-	double area;
-	double weightedArea;
-	glm::vec2 centroid;
-	std::vector<uint32_t> tris;
-};
-
-static std::vector<glm::uvec3> GetTriangulation(std::vector<vec2> & points, DoDeeDum::QuadTree const& tree, bool did_insert)
-{
-	if(points.empty()) return {};
-	
-	auto triangles = Triangulate(points);
-	
-	bool check_edge_lists = false;
-	
-	uint32_t N = points.size()-int(did_insert);
-	uint32_t write = 0u;
-	for(auto read = 0u; read < triangles.size(); ++read)
-	{
-		glm::uvec3 tri = triangles[read];
-			
-		vec2 const& v0 = points[tri.x*2];
-		vec2 const& v1 = points[tri.y*2];
-		vec2 const& v2 = points[tri.z*2];
-			
-		auto centroid = (v0 + v1 + v2) / 3.f;
-		bool contains_centroid = tree.IsContained(centroid);
-		bool contains_added_point = false;
-		
-		if(!contains_centroid)
-		{
-			contains_added_point = (tri.x == N || tri.y == N || tri.z == N);
-			check_edge_lists |= contains_added_point;
-		}
-			
-	// basically if this test is bad then the mesh is ill formed.
-		if(!contains_added_point && !tree.IsContained(centroid))
-		{
-			if(read != write)
-			{
-				triangles[write] = triangles[read];
-			}
-			
-			write += 1;
-		}
-	}
-	
-	triangles.resize(write);	
-	
-	if(!check_edge_lists)
-		return triangles;
-		
-	std::unordered_map<uint64_t, std::vector<int>> edge_lists;
-	
-	for(auto read = 0u; read < triangles.size(); ++read)
-	{
-		glm::uvec3 tri{triangles[read] };
-		if(!(tri.x == N || tri.y == N || tri.z == N)) continue;
-		
-		for(int e = 0; e < 3; ++e)
-		{
-			uint32_t a = tri[e];
-			uint32_t b = tri[e%3];
-			
-			if(a > b) std::swap(a, b);
-		
-			if(b == N)
-			{
-				uint64_t key = (uint64_t(a) << 32) | b;
-				edge_lists[key].push_back(read);
-			}
-		}
-	}
-	
-	bool has_perimiter_edge = 0;
-	for(auto & itr : edge_lists)
-	{
-		if(itr.second.size() == 1)
-		{
-			has_perimiter_edge = true;
-			break;
-		}
-	}
-	
-	if(!has_perimiter_edge)
-		return triangles;
-		
-	points.resize(points.size()-2);
-	return GetTriangulation(points, tree, false);
-}
-
-static std::vector<std::vector<uint32_t>> ToEdgeLists(const std::vector<glm::uvec3> &triangles, uint32_t no_verts, bool only_outside)
+DoDeeDum::Silhouette DoDeeDum::GetSilhouette(Input const& in, const char * path, const char * name)
 {	
-	std::vector<std::vector<uint32_t>> v;
-	v.resize(no_verts);
+	static std::atomic<int> counter{0};
+	auto id = counter++;
 	
-	for(auto &a : v)
-		a.reserve(4);
-		
-	for(auto read = 0u; read < triangles.size(); ++read)
+	auto functional_projection = in.projection * 
+			glm::mat4(
+				in.scale.x, 0, 0, 0, 
+				0, in.scale.y, 0, 0, 
+				0, 0, in.scale.z, 0,
+				0, 0, 0, 1);
+	
+	// functional_projection * scale * in.projection			
+	auto scale = functional_projection * glm::inverse(in.projection);
+	
+	ProjectedMesh projected(in.mesh, in.projection, in.joints);
+	MeshEdges edges = MeshEdges::Perimiter(projected);
+	
+	for(auto & p : edges.points)
 	{
-		glm::uvec3 tri = triangles[read];
-		
-		v[tri.x].push_back(tri.y);
-		v[tri.x].push_back(tri.z);
-		v[tri.y].push_back(tri.x);
-		v[tri.y].push_back(tri.z);
-		v[tri.z].push_back(tri.x);
-		v[tri.z].push_back(tri.y);
+		glm::vec4 v = scale * glm::vec4(p, 0, 1);
+		p = (glm::vec2&)v * (v.w? 1.f / v.w : 1.f);
 	}
 	
-	for(auto & vec : v)
+	if(path && name)
 	{
-		std::sort(vec.begin(), vec.end());
-		
-		if(only_outside == false)
+		char buffer[64];
+		if(snprintf(buffer, sizeof(buffer), "%s-edges-%d.obj", name, id) > 0)
 		{
-			auto itr = std::unique(vec.begin(), vec.end());
-			vec.resize(itr - vec.begin());
+			edges.export_debug_OBJ(std::filesystem::path(path) / buffer);			
 		}
-		else
-		{
-			uint32_t read = 0, write = 0;
-			
-			for(read = 0; read < vec.size(); ++read)
-			{
-				if(read+1 < vec.size())
-				{
-					if(vec[read] == vec[read+1])
-					{
-						++read;
-						continue;
-					}
-				}
-				
-				vec[write++] = vec[read];
-			}
-			
-			vec.resize(write);
-		}
-	}
-	
-	return v;
-}
-
-static std::vector<std::vector<uint32_t>> ToCliques(std::vector<std::vector<uint32_t>> const& edge_lists)
-{
-	std::vector<std::vector<uint32_t>> r;
-	
-	std::vector<bool> marks(edge_lists.size(), false);
-	std::vector<uint32_t> stack;
-	stack.reserve(edge_lists.size());
-	
-	for(auto i = 0u; i < marks.size(); ++i)
-	{
-		if(marks[i]) continue;
-		
-		stack.push_back(i);
-		std::vector<uint32_t> list;
-		list.reserve(edge_lists.size());
-		
-		while(stack.size())
-		{
-			auto item = stack.back();
-			stack.pop_back();
-			
-			marks[item] = true;	
-			list.push_back(item);	
-				
-			for(auto v : edge_lists[item])
-			{
-				if(!marks[v])
-					stack.push_back(v);
-			}		
-		}
-		
-		r.push_back(std::move(list));
-	}
-
-	return r;
-}
-
-static std::vector<DoDeeDum::Silhouette> GetSilhouettes(std::vector<glm::vec2> const& points, std::vector<float> const& weights, const std::vector<glm::uvec3> &triangles, std::vector<std::vector<uint32_t>> const& cliques, DoDeeDum::Options options)
-{
-	std::vector<uint32_t> index_to_clique;
-	std::vector<DoDeeDum::Silhouette> r(cliques.size());
-	index_to_clique.resize(points.size(), 0);
-	
-	for(auto i = 1.0; i < cliques.size(); ++i)
-	{
-		for(auto c : cliques[i])
-			index_to_clique[c] = i;
 	}	
-		
-	for(auto read = 0u; read < triangles.size(); ++read)
-	{
-		glm::uvec3 tri = triangles[read];
-			
-		vec2 const& v0 = points[tri.x];
-		vec2 const& v1 = points[tri.y];
-		vec2 const& v2 = points[tri.z];
-			
-		auto edge0 = v1 - v0;
-		auto edge1 = v2 - v0;
-		auto area = 0.5f * glm::abs(edge0.x * edge1.y - edge0.y * edge1.x);
-		glm::vec3 w = weights.empty()? glm::vec3(1.0) : glm::vec3{weights[tri.x], weights[tri.y], weights[tri.z]};
-		
-		auto centroid = (v0*w.x + v1*w.y + v2*w.z) / (w.x+w.y+w.z);
-		float weight = weights.empty()? 1.0 : DoDeeDum::GetAverageWeight(w);
-		
-		auto which = index_to_clique[tri.x];
-		assert(index_to_clique[tri.z] == which);
-		assert(index_to_clique[tri.y] == which);
-		
-		auto & silhouette = r[which];
-		
-		silhouette.area += area;
-		silhouette.weightedArea += weight*area;
-		
-		silhouette.center += (area*weight)*centroid;
-	}
-
-	for(auto & silhouette : r)
-	{
-		silhouette.center /= silhouette.weightedArea? silhouette.weightedArea : 1.0;
-
-		if(weights.empty())
-			silhouette.weightedArea = 0;
-	}
 	
-	if(options & (DoDeeDum::GET_WEIGHTED_AREA_2ND_MOMENT|DoDeeDum::GET_AREA_2ND_MOMENT))
+	
+	auto perimiter  = edges.GetPerimiter();	
+	
+	if(path && name)
 	{
-		for(auto read = 0u; read < triangles.size(); ++read)
+		char buffer[64];
+		if(snprintf(buffer, sizeof(buffer), "%s-perimiter-%d.obj", name, id) > 0)
 		{
-			glm::uvec3 tri = triangles[read];
-				
-			vec2 const& v0 = points[tri.x];
-			vec2 const& v1 = points[tri.y];
-			vec2 const& v2 = points[tri.z];
-			
-			auto which = index_to_clique[tri.x];
-			auto& silhouette = r[which];
-			vec2 center = silhouette.center;
-			
-			// Translate vertices to centroid coordinate system
-			vec2 p0 = v0 - center;
-			vec2 p1 = v1 - center;
-			vec2 p2 = v2 - center;
-			
-			auto edge0 = p1 - p0;
-			auto edge1 = p2 - p0;
-			float cross = edge0.x * edge1.y - edge0.y * edge1.x;
-			
-			glm::vec3 w = weights.empty()? glm::vec3(1.0) : glm::vec3{weights[tri.x], weights[tri.y], weights[tri.z]};
-			float weight = weights.empty()? 1.0 : DoDeeDum::GetAverageWeight(w);
-			
-			// Second moment of area about centroid
-			float Ixx = (1.0f/12.0f) * cross * (p0.y*p0.y + p1.y*p1.y + p2.y*p2.y + 
-												  p0.y*p1.y + p1.y*p2.y + p2.y*p0.y);
-			float Iyy = (1.0f/12.0f) * cross * (p0.x*p0.x + p1.x*p1.x + p2.x*p2.x + 
-												  p0.x*p1.x + p1.x*p2.x + p2.x*p0.x);
-			float Ixy = (1.0f/24.0f) * cross * (v0.x*v0.y + v1.x*v1.y + v2.x*v2.y + 
-												  v0.x*v1.y + v0.y*v1.x + v1.x*v2.y + 
-												  v1.y*v2.x + v2.x*v0.y + v2.y*v0.x);
-					
-			silhouette.area2ndMoment.xx += Ixx;
-			silhouette.area2ndMoment.yy += Iyy;
-			silhouette.area2ndMoment.xy += Ixy;
-			
-			if(weights.size())
-			{
-				silhouette.weightedArea2ndMoment.xx += weight * Ixx;
-				silhouette.weightedArea2ndMoment.yy += weight * Iyy;
-				silhouette.weightedArea2ndMoment.xy += weight * Ixy;				
-			}
+			::Export_Obj(std::filesystem::path(path) / buffer, edges.points, perimiter.indices, perimiter.loops);			
 		}
-	}
+	}	
 	
-	if(options & (DoDeeDum::GET_OUTLINE|DoDeeDum::GET_DELAUNY_PERIMITER))
-	{
-		auto edge_lists = ToEdgeLists(triangles, points.size(), true);
-		auto cliques = ToCliques(edge_lists);
-		
-		for(auto i = 0u; i < cliques.size(); ++i)
-		{
-			r[i].points.reserve(cliques[i].size());
-			
-			for(auto & p : cliques[i])
-			{
-				r[i].points.push_back(points[p]);
-			}
-			
-			r[i].outline = std::move(cliques[i]);
-		}
-	}
+	auto s = ::GetSilhouette(std::move(edges.points), perimiter.indices, perimiter.loops, in.getSecondMoment);	
+	s.projection = functional_projection;
 	
-	return r;
+	return s;
 }
+
+static DoDeeDum::Silhouette GetSilhouette(std::vector<glm::vec2> && points, std::span<uint32_t> edges,  std::span<std::pair<uint32_t, uint32_t>> loops, bool get_second_moment)
+{
+	std::vector<glm::uvec3> triangulation;
+	{
+		CDT::Triangulation<float> cdt;
+		
+		static_assert(sizeof(glm::vec2) == sizeof(CDT::V2d<float>));
+		cdt.insertVertices((std::vector<CDT::V2d<float>>&)points);
+		
+		for(auto loop : loops)
+		{
+			auto offset = edges.data()+loop.first;
+			cdt.insertEdges(
+				offset, 
+				offset + loop.second,
+				[](uint32_t& it)  { return it; },
+				[offset=offset,length=loop.second](uint32_t& it) { return offset[((&it - offset)+1)%length]; }
+			);
+		}
+		cdt.eraseOuterTrianglesAndHoles();
+	//	cdt.eraseSuperTriangle();
+		
+		
+		triangulation.reserve(cdt.triangles.size());
+		
+		for(auto i = 0u; i < cdt.triangles.size(); ++i)
+		{
+			triangulation.push_back({ 
+				cdt.triangles[i].vertices[0], 
+				cdt.triangles[i].vertices[1], 
+				cdt.triangles[i].vertices[2]
+			});
+			
+			assert(cdt.triangles[i].vertices[0] < points.size());
+			assert(cdt.triangles[i].vertices[1] < points.size());
+			assert(cdt.triangles[i].vertices[2] < points.size());
+		}
+	}
+	
+	return GetSilhouette(std::move(points), std::move(triangulation), get_second_moment);
+}
+
+static DoDeeDum::Silhouette GetSilhouette(std::vector<glm::vec2> && points, std::vector<glm::uvec3> && triangulation, bool get_second_moment)
+{
+	DoDeeDum::Silhouette s;
+	s.points = std::move(points);
+	s.delauny_triangulation = std::move(triangulation);
+	
+	// just assume the triangulation field was filled somehow.. 
+
+    s.area = 0.0;
+    glm::vec2 weighted_center(0.0f, 0.0f);
+    
+    for (const auto& tri : s.delauny_triangulation)
+    {
+        const glm::vec2& p0 = s.points[tri.x];
+        const glm::vec2& p1 = s.points[tri.y];
+        const glm::vec2& p2 = s.points[tri.z];
+        
+        // Signed area of triangle
+        double triangle_area = 0.5 * ((p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y));
+        s.area += triangle_area;
+        
+        glm::vec2 triangle_centroid = (p0 + p1 + p2) / 3.0f;
+        
+        weighted_center += triangle_centroid * static_cast<float>(triangle_area);
+    }
+    
+    s.area = std::abs(s.area);
+    s.center = weighted_center / static_cast<float>(s.area);
+        
+    // Calculate second moment if requested
+    if (get_second_moment)
+    {
+        s.area2ndMoment = {0.0f, 0.0f, 0.0f};
+        
+        for (const auto& tri : s.delauny_triangulation)
+        {
+            const glm::vec2& p0 = s.points[tri.x];
+            const glm::vec2& p1 = s.points[tri.y];
+            const glm::vec2& p2 = s.points[tri.z];
+            
+            double triangle_area = 0.5 * ((p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y));
+            
+            // Translate to center
+            glm::vec2 q0 = p0 - s.center;
+            glm::vec2 q1 = p1 - s.center;
+            glm::vec2 q2 = p2 - s.center;
+            
+            // Second moment integrals for a triangle (using standard formulas)
+            float Ixx = (q0.y*q0.y + q1.y*q1.y + q2.y*q2.y + q0.y*q1.y + q1.y*q2.y + q2.y*q0.y) / 6.0f;
+            float Iyy = (q0.x*q0.x + q1.x*q1.x + q2.x*q2.x + q0.x*q1.x + q1.x*q2.x + q2.x*q0.x) / 6.0f;
+            float Ixy = (2*q0.x*q0.y + 2*q1.x*q1.y + 2*q2.x*q2.y + q0.x*q1.y + q1.x*q0.y + 
+                         q1.x*q2.y + q2.x*q1.y + q2.x*q0.y + q0.x*q2.y) / 12.0f;
+            
+            s.area2ndMoment.xx += Ixx * static_cast<float>(triangle_area);
+            s.area2ndMoment.yy += Iyy * static_cast<float>(triangle_area);
+            s.area2ndMoment.xy += Ixy * static_cast<float>(triangle_area);
+        }
+    }
+    
+    return s;
+}
+    
+
+void DoDeeDum::Export_Obj(std::filesystem::path const& path, std::span<const glm::vec2> points, std::span<const glm::uvec3> tris)
+{
+	std::ofstream file(path);
+	if (!file.is_open())
+	{
+		throw std::system_error(errno, std::generic_category(), 
+		                        "Failed to open file: " + path.string());
+	}
+	
+	// Write vertices
+	for (const auto& point : points)
+	{
+		file << "v " << point.x << " " << point.y << " " << 0 << "\n";
+	}
+	
+	// Write edges as lines (OBJ line elements)
+	for (const auto& tri : tris)
+	{
+		// OBJ indices are 1-based
+		file << "f " << (tri.x + 1) << " " << (tri.y + 1) << " " << (tri.z + 1) << "\n";
+	}
+	
+	file.close();
+	
+	if (file.fail())
+	{
+		throw std::system_error(errno, std::generic_category(),
+		                        "Failed to write to file: " + path.string());
+	}
+}
+
+
+// measure the longest distance along the silhouette that crosses the given line segment. 
+DoDeeDum::Silhouette::Measurement DoDeeDum::Silhouette::MeasureWidth(glm::vec2 const& axis, glm::vec2 const& point, glm::vec2 const& dir, double min, double max) const
+{
+    Measurement result;
+    result.length = 0.0;
+    
+    for(auto i = 0u; i < points.size(); ++i)
+    {
+        for(auto j = i+1; j < points.size(); ++j)
+        {
+            // Find where the line segment between points[i] and points[j] 
+            // crosses the line defined by point and dir
+            
+            glm::dvec2 segDir = glm::dvec2(points[j]) - glm::dvec2(points[i]);
+            glm::dvec2 toStart = glm::dvec2(points[i]) - glm::dvec2(point);
+            
+            // Solve for intersection: point + t*dir = points[i] + s*segDir
+            // This gives us: toStart + s*segDir = t*dir
+            // Using cross product to solve: s = (toStart × dir) / (segDir × dir)
+            
+            double denom = segDir.x * dir.y - segDir.y * dir.x; // cross product
+            
+            // stuff is very small, rely on the s check to deal with things that are weird.
+            if(std::abs(denom) == 0.0) continue;
+            
+            double s = (toStart.x * dir.y - toStart.y * dir.x) / denom;
+            
+            // Check if intersection is on the segment between i and j
+            if(s < 0.0 || s > 1.0)
+                continue;
+            
+            // Find t (position along the dir line)
+            double t = (toStart.x * segDir.y - toStart.y * segDir.x) / (-denom);
+            
+            // Check if intersection point is within [min, max] range
+            if(t < min || t > max)
+                continue;
+            
+            // Calculate distance between the two points along the axis direction
+            double distance = std::abs(glm::dot(points[i] - points[j], axis));
+            
+            // Update if this is the longest distance found
+            if(distance > result.length)
+            {
+                result.length = distance;
+                result.points = {i, j};
+            }
+        }
+    }
+    
+    return result;
+}
+
+
+static void __unused Export_Obj(std::filesystem::path const& path, std::span<glm::vec2> points, std::span<uint32_t> edges, std::span<std::pair<uint32_t, uint32_t> > loops)
+{
+	std::ofstream file(path);
+	if (!file.is_open())
+	{
+		throw std::system_error(errno, std::generic_category(), 
+		                        "Failed to open file: " + path.string());
+	}
+	
+	// Write vertices
+	for (const auto& point : points)
+	{
+		file << "v " << point.x << " " << point.y << " " << 0 << "\n";
+	}
+	
+	for(auto i = 0u; i < loops.size(); ++i)
+	{
+		file << "g " << i << "\n";
+		
+		auto & l = loops[i];
+		for(auto i = 0u; i < l.second; ++i)
+		{
+			file << "l " << edges[l.first+i]+1 << " " << edges[l.first+((i+1)%l.second)]+1 << "\n";
+		}
+	}
+		
+	file.close();
+	
+	if (file.fail())
+	{
+		throw std::system_error(errno, std::generic_category(),
+		                        "Failed to write to file: " + path.string());
+	}
+}
+

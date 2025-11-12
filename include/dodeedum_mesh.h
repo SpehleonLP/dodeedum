@@ -151,14 +151,14 @@ struct Primitive
 	bool        hasAlpha{false};
 	
     template<typename F>
-    void for_each_tri(F & func, uint32_t thread_id = 0, uint32_t no_threads = 1) const;
+    void for_each_tri(F const& func, uint32_t thread_id = 0, uint32_t no_threads = 1) const;
     template<typename F>
-    void for_each_vertex(F & func, uint32_t thread_id = 0, uint32_t no_threads = 1) const;
+    void for_each_vertex(F const& func, uint32_t thread_id = 0, uint32_t no_threads = 1) const;
 };
 
 
 template<typename F>
-void Primitive::for_each_tri(F & func, uint32_t thread_id, uint32_t no_threads) const
+void Primitive::for_each_tri(F const& func, uint32_t thread_id, uint32_t no_threads) const
 {
 	indices.for_each_index([&](glm::uvec3 tri) -> bool
 	{
@@ -207,7 +207,7 @@ void Primitive::for_each_tri(F & func, uint32_t thread_id, uint32_t no_threads) 
 }
 
 template<typename F>
-void Primitive::for_each_vertex(F & func, uint32_t thread_id, uint32_t no_threads) const
+void Primitive::for_each_vertex(F const& func, uint32_t thread_id, uint32_t no_threads) const
 {
 	indices.for_each_index([&](uint32_t index) -> bool
 	{

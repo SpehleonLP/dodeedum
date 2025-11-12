@@ -1,29 +1,141 @@
 #include "dodeedum_project2d.h"
+#include "dodeedum_vertex_remapping.hpp"
 #include "dodeedum_mesh.h"
+#include "../include/dodeedum.h"
+#include "dodeedum_quadtree.h"
 #include <cstring>
 #include <fstream>
 #include <cfloat>
 
-namespace DoDeeDum
-{
-	template<typename T> 
-	std::array<T, 3> sort3(std::array<T, 3> const& values)
-	{
-		int _min = values[0] < values[1]? 0 : 1;
-		int _max = 1 - _min;
-		
-		_min = values[_min] <= values[2]? _min : 2;
-		_max = values[_max] > values[2]? _max : 2;
-		//the three indices must sum to 0+1+2=3.
-		int _mid = 3 - _min - _max;
-			
-		return {values[_min], values[_mid], values[_max]};	
-	}
-}
 
 DoDeeDum::ProjectedMesh::~ProjectedMesh() = default;
 
-DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, std::span<uint32_t> joints)
+DoDeeDum::ProjectedMesh::ProjectedMesh(ProjectedMesh const& it, float cutoff)
+{	
+	min = glm::vec2(FLT_MAX);
+	max = glm::vec2(-FLT_MAX);
+	
+	points.reserve(it.points.size()*1.5);
+	tris.reserve(it.tris.size()*1.5);
+	std::vector<int> point_index(it.points.size(), -1);
+	
+	auto copy_vertex = [&](uint32_t id) -> uint32_t
+	{
+		if(point_index[id] < 0)
+		{
+			point_index[id] = points.size();
+			points.push_back(it.points[id]);
+			
+			min = glm::min(min, (glm::vec2&)points.back());
+			max = glm::max(max, (glm::vec2&)points.back());
+		}
+		
+		return point_index[id];
+	};
+	
+	auto add_new_vertex = [&](const glm::vec4& v) -> uint32_t
+	{
+		uint32_t idx = points.size();
+		points.push_back(v);
+		
+		min = glm::min(min, (glm::vec2&)points.back());
+		max = glm::max(max, (glm::vec2&)points.back());
+		
+		return idx;
+	};
+	
+	auto interpolate_at_cutoff = [&](const glm::vec4& below, const glm::vec4& above) -> glm::vec4
+	{
+		float t = (cutoff - below.z) / (above.z - below.z);
+		return glm::mix(below, above, t);
+	};
+	
+	std::vector<std::pair<glm::vec4, int>> above_vertices; // vertex and original index (-1 for new)
+	std::vector<std::pair<glm::vec4, int>> below_vertices;
+	
+	for(auto i = 0u; i < it.tris.size(); ++i)
+	{
+		std::array<uint32_t, 3>& indices = (std::array<uint32_t, 3>&)it.tris[i];
+		
+		std::array<glm::vec4, 3> tri =
+		{
+			it.points[it.tris[i].x],
+			it.points[it.tris[i].y],
+			it.points[it.tris[i].z]
+		};
+	
+		if(tri[0].w < cutoff && tri[1].w < cutoff && tri[2].w < cutoff)
+			continue;
+			
+		if(tri[0].w >= cutoff && tri[1].w >= cutoff && tri[2].w >= cutoff)
+		{
+			tris.push_back({
+				copy_vertex(it.tris[i].x),
+				copy_vertex(it.tris[i].y),
+				copy_vertex(it.tris[i].z)
+			});
+			continue;
+		}
+		
+		// Clip triangle at cutoff plane
+		above_vertices.clear(); 
+		below_vertices.clear();
+		
+		for(int j = 0; j < 3; ++j)
+		{
+			if(tri[j].w >= cutoff)
+				above_vertices.push_back({tri[j], (int)indices[j]});
+			else
+				below_vertices.push_back({tri[j], (int)indices[j]});
+		}
+		
+		// Case 1: One vertex above, two below - creates one triangle
+		if(above_vertices.size() == 1)
+		{
+			auto v_above  = above_vertices[0].first;
+			int idx_above = above_vertices[0].second;
+			
+			auto v_below0 = below_vertices[0].first;
+			auto v_below1 = below_vertices[1].first;
+			
+			auto intersect0 = interpolate_at_cutoff(v_below0, v_above);
+			auto intersect1 = interpolate_at_cutoff(v_below1, v_above);
+			
+			uint32_t id_above = copy_vertex(idx_above);
+			uint32_t id_int0 = add_new_vertex(intersect0);
+			uint32_t id_int1 = add_new_vertex(intersect1);
+			
+			tris.push_back({id_above, id_int0, id_int1});
+		}
+		// Case 2: Two vertices above, one below - creates two triangles (a quad)
+		else if(above_vertices.size() == 2)
+		{
+			auto v_above0 = above_vertices[0].first;
+			auto v_above1 = above_vertices[1].first;
+			int idx_above0 = above_vertices[0].second;
+			int idx_above1 = above_vertices[1].second;
+			
+			auto v_below = below_vertices[0].first;
+			
+			auto intersect0 = interpolate_at_cutoff(v_below, v_above0);
+			auto intersect1 = interpolate_at_cutoff(v_below, v_above1);
+			
+			uint32_t id_above0 = copy_vertex(idx_above0);
+			uint32_t id_above1 = copy_vertex(idx_above1);
+			uint32_t id_int0 = add_new_vertex(intersect0);
+			uint32_t id_int1 = add_new_vertex(intersect1);
+			
+			// Form a quad: v_above0, intersect0, intersect1, v_above1
+			// Split into two triangles
+			tris.push_back({id_above0, id_int0, id_int1});
+			tris.push_back({id_above0, id_int1, id_above1});
+		}
+	}
+	
+	sort();
+}
+	
+DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, std::span<const uint32_t> joints)
 {
 	min = glm::vec2(FLT_MAX);
 	max = glm::vec2(-FLT_MAX);
@@ -54,7 +166,7 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 			vert *= vert.w? 1.0 / vert.w : 1.0;
 			
 			vertex_mapping[v] = points.size();
-			points.push_back({vert.x, vert.y, weight});	
+			points.push_back({vert.x, vert.y, vert.z, weight});	
 			
 			min = glm::min(min, (glm::vec2&)vert);	
 			max = glm::max(max, (glm::vec2&)vert);			
@@ -63,6 +175,9 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 		p.indices.for_each_tri([&](glm::uvec3 const& tri) -> bool
 		{
 			glm::uvec3 new_tri = { vertex_mapping[tri.x], vertex_mapping[tri.y], vertex_mapping[tri.z] };
+			
+			if(p.flipNormals)
+				std::swap(new_tri.x, new_tri.y);
 			
 			if(new_tri.x != ~0u && new_tri.y != ~0u && new_tri.z != ~0u)
 			{
@@ -75,8 +190,10 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 	
 	if(min.x > max.x)
 		min = max = glm::vec2(0);
+		
+	sort();
 }
-std::vector<std::vector<float>>	 DoDeeDum::GetSubsetWeights(Mesh const& mesh, std::span<uint32_t> joints)
+std::vector<std::vector<float>>	 DoDeeDum::GetSubsetWeights(Mesh const& mesh, std::span<const uint32_t> joints)
 {
 	std::vector<std::vector<float>>	 r;
 	if(joints.empty()) return {};
@@ -185,72 +302,58 @@ std::vector<std::vector<bool>>  DoDeeDum::GetSubsetMarks(Mesh const& mesh, std::
 
 void DoDeeDum::ProjectedMesh::sort()
 {
-	std::vector<std::pair<int, glm::vec2>> memo;
-	memo.resize(points.size());
-	
-	for(auto i = 0u; i < points.size(); ++i)
-	{
-		memo[i].first = i;
-		memo[i].second = points[i];
-	}
-	
-	std::sort(memo.begin(), memo.end(), [](auto & a, auto & b) 
-	{ 
-		return (a.second.y < b.second.y)? 
-					(a.second.y < b.second.y)
-				:	(a.second.x < b.second.x);
-	});
-	std::vector<glm::vec3> new_points(points.size());
-	
-	std::vector<int> vertex_mapping;
-	vertex_mapping.resize(points.size());
-	
-	for(auto i = 0u; i < points.size(); ++i)
-	{
-		new_points[i] = points[memo[i].first];
-		vertex_mapping[memo[i].first] = i;
-	}
-	
-	points = std::move(new_points);
+	std::vector<int> vertex_mapping = sort_vertices(points);
+	std::vector<int> deduplicate = deduplicate_vertices(points);
 	
 	for(auto & t : tris)
 	{
-		t.x = vertex_mapping[t.x];
-		t.y = vertex_mapping[t.y];
-		t.z = vertex_mapping[t.z];
-		
-		// sort indices
-		(std::array<uint32_t, 3>&)t = sort3((std::array<uint32_t, 3>&)t);
+		t.x = deduplicate[vertex_mapping[t.x]];
+		t.y = deduplicate[vertex_mapping[t.y]];
+		t.z = deduplicate[vertex_mapping[t.z]];
+				
+		// Rotate indices so that t.z holds the largest value while preserving winding order
+		if (t.x > t.y && t.x > t.z) {
+			// t.x is largest, rotate right: (x,y,z) -> (z,x,y)
+			uint32_t temp = t.z;
+			t.z = t.x;
+			t.x = t.y;
+			t.y = temp;
+		} else if (t.y > t.z) {
+			// t.y is largest, rotate left: (x,y,z) -> (y,z,x)
+			uint32_t temp = t.x;
+			t.x = t.y;
+			t.y = t.z;
+			t.z = temp;
+		}
 	}
 	
 	std::sort(tris.begin(), tris.end(), [](auto & a, auto & b) { return a.z < b.z; });
 }
 
-
-bool DoDeeDum::GetIntersection(glm::vec2 & dst, glm::vec2 const& a0, glm::vec2 const& a1, glm::vec2 const& b0, glm::vec2 const& b1)
+bool DoDeeDum::GetIntersection(glm::vec2 & dst, glm::dvec2 const& a0, glm::dvec2 const& a1, glm::dvec2 const& b0, glm::dvec2 const& b1)
 {
-    glm::vec2 s1 = a1 - a0;
-    glm::vec2 s2 = b1 - b0;
-
-    float denominator = (-s2.x * s1.y + s1.x * s2.y);
-
-    // Check if lines are parallel (denominator is zero)
-    if (std::abs(denominator) < 1e-6f)
-        return false;
-
-    float s = (-s1.y * (a0.x - b0.x) + s1.x * (a0.y - b0.y)) / denominator;
-    float t = ( s2.x * (a0.y - b0.y) - s2.y * (a0.x - b0.x)) / denominator;
-
-    // Check if intersection point lies on both line segments
-    if (s >= 0 && s <= 1 && t >= 0 && t <= 1)
-    {
-        // Intersection detected
-        dst.x = a0.x + (t * s1.x);
-        dst.y = a0.y + (t * s1.y);
-        return true;
-    }
-
-    return false; // No intersection
+    glm::dvec2 s1 = glm::normalize(a1 - a0);
+	glm::dvec2 s2 = glm::normalize(b1 - b0);
+	double len1 = glm::length(a1 - a0);
+	double len2 = glm::length(b1 - b0);
+	
+	double denominator = (-s2.x * s1.y + s1.x * s2.y);
+	
+	if (!std::isnormal(denominator))
+		return false;
+	
+	double s = (-s1.y * (a0.x - b0.x) + s1.x * (a0.y - b0.y)) / denominator;
+	double t = ( s2.x * (a0.y - b0.y) - s2.y * (a0.x - b0.x)) / denominator;
+	
+	// Now t and s are in world units, so check against actual lengths
+	if (s >= 0 && s <= len2 && t >= 0 && t <= len1)
+	{
+		dst.x = a0.x + (t * s1.x);
+		dst.y = a0.y + (t * s1.y);
+		return true;
+	}
+	
+	return false;
 }
 
 float DoDeeDum::ProjectedMesh::get_value_at_point(glm::vec2 const& point, uint32_t tri) const
@@ -277,21 +380,22 @@ float DoDeeDum::ProjectedMesh::get_value_at_point(glm::vec2 const& point, uint32
 	if (a < 0.0f || a > 1.0f || b < 0.0f || b > 1.0f || c < 0.0f || c > 1.0f)
 		return 0.0f;
 
-	// Interpolate weights (z components)
-	return a * points[t.x].z + b * points[t.y].z + c * points[t.z].z;
+	// Interpolate weights (w components)
+	return a * points[t.x].w + b * points[t.y].w + c * points[t.z].w;
 }
 
 using vec3 = glm::vec3;
+using vec4 = glm::vec3;
 
 // Clip a polygon against the plane: dot(barycentric, w) = 1.0
 // Keeps the region where the weight <= 1
-static int clipPolygonAt1(vec3 poly[10], int count, vec3 w) {
-    vec3 outPoly[10];
+static int clipPolygonAt1(std::span<vec3> poly, vec4 w) {
+    vec4 outPoly[10];
     int outCount = 0;
     
-    for(int i = 0; i < count; i++) {
-        vec3 v0 = poly[i];
-        vec3 v1 = poly[(i + 1) % count];
+    for(uint32_t i = 0; i < poly.size(); i++) {
+        vec4 v0 = poly[i];
+        vec4 v1 = poly[(i + 1) % poly.size()];
         
         float val0 = dot(v0, w);
         float val1 = dot(v1, w);
@@ -330,14 +434,13 @@ float DoDeeDum::GetAverageWeight(vec3 w) {
     // Need to clip triangle against w=1 plane
     
     // Start with triangle in barycentric coordinates
-    vec3 poly[10];
+    std::array<vec3, 3> poly;
     poly[0] = vec3(1.0, 0.0, 0.0);  // weight = w.x
     poly[1] = vec3(0.0, 1.0, 0.0);  // weight = w.y
     poly[2] = vec3(0.0, 0.0, 1.0);  // weight = w.z
-    int count = 3;
     
     // Clip against w <= 1 plane
-    int clippedCount = clipPolygonAt1(poly, count, w);
+    int clippedCount = clipPolygonAt1(std::span{poly}, w);
     
     if(clippedCount == 0) return 1.0;  // Everything was clipped (shouldn't happen with our check above)
     
@@ -398,31 +501,137 @@ bool DoDeeDum::ProjectedMesh::serialize(std::string const& filepath) const
 	return file.good();
 }
 
-DoDeeDum::ProjectedMesh::ProjectedMesh(std::filesystem::path const& filepath)
+DoDeeDum::ProjectedMesh DoDeeDum::ProjectedMesh::deserialize(std::filesystem::path const& filepath)
 {
+	ProjectedMesh r;
+	
 	std::ifstream file(filepath, std::ios::binary);
 	if (!file.is_open())
-		return;
+		return r;
 
 	// Read and verify header
 	char header[8];
 	file.read(header, 8);
 	if (std::strncmp(header, "PMESH01", 7) != 0)
-		return;
+		return r;
 
 	// Read min/max bounds
-	file.read(reinterpret_cast<char*>(&min), sizeof(glm::vec2));
-	file.read(reinterpret_cast<char*>(&max), sizeof(glm::vec2));
+	file.read(reinterpret_cast<char*>(&r.min), sizeof(glm::vec2));
+	file.read(reinterpret_cast<char*>(&r.max), sizeof(glm::vec2));
 
 	// Read point count and points
 	uint64_t point_count;
 	file.read(reinterpret_cast<char*>(&point_count), sizeof(uint64_t));
-	points.resize(point_count);
-	file.read(reinterpret_cast<char*>(points.data()), point_count * sizeof(glm::vec3));
+	r.points.resize(point_count);
+	file.read(reinterpret_cast<char*>(r.points.data()), point_count * sizeof(glm::vec3));
 
 	// Read triangle count and triangles
 	uint64_t tri_count;
 	file.read(reinterpret_cast<char*>(&tri_count), sizeof(uint64_t));
-	tris.resize(tri_count);
-	file.read(reinterpret_cast<char*>(tris.data()), tri_count * sizeof(glm::uvec3));
+	r.tris.resize(tri_count);
+	file.read(reinterpret_cast<char*>(r.tris.data()), tri_count * sizeof(glm::uvec3));
+	
+	return r;
+}
+
+bool DoDeeDum::ProjectedMesh::polygons_share_edge(uint32_t tri_a, uint32_t tri_b) const
+{
+	auto const& t_a = tris[tri_a];
+	auto const& t_b = tris[tri_b];
+
+	// Get vertices
+	std::array<uint32_t, 3> verts_a = {t_a.x, t_a.y, t_a.z};
+	std::array<uint32_t, 3> verts_b = {t_b.x, t_b.y, t_b.z};
+
+	// Count shared vertices
+	int shared = 0;
+	for (uint32_t va : verts_a)
+	{
+		for (uint32_t vb : verts_b)
+		{
+			if (va == vb)
+			{
+				++shared;
+				break;
+			}
+		}
+	}
+
+	// Two triangles share an edge if they have exactly 2 shared vertices
+	return shared == 2;
+}
+
+bool DoDeeDum::ProjectedMesh::polygons_intersect(uint32_t tri_a, uint32_t tri_b) const
+{
+	auto const& t_a = tris[tri_a];
+	auto const& t_b = tris[tri_b];
+
+	glm::vec2 const& a0 = points[t_a.x];
+	glm::vec2 const& a1 = points[t_a.y];
+	glm::vec2 const& a2 = points[t_a.z];
+
+	glm::vec2 const& b0 = points[t_b.x];
+	glm::vec2 const& b1 = points[t_b.y];
+	glm::vec2 const& b2 = points[t_b.z];
+
+	// Test if any vertex of one triangle is inside the other
+	if (point_in_triangle(a0, b0, b1, b2) ||
+	    point_in_triangle(a1, b0, b1, b2) ||
+	    point_in_triangle(a2, b0, b1, b2) ||
+	    point_in_triangle(b0, a0, a1, a2) ||
+	    point_in_triangle(b1, a0, a1, a2) ||
+	    point_in_triangle(b2, a0, a1, a2))
+	{
+		return true;
+	}
+
+	// Test if any edges intersect
+	std::array<std::pair<glm::vec2, glm::vec2>, 3> edges_a = {
+		{{a0, a1}, {a1, a2}, {a2, a0}}
+	};
+	std::array<std::pair<glm::vec2, glm::vec2>, 3> edges_b = {
+		{{b0, b1}, {b1, b2}, {b2, b0}}
+	};
+
+	for (auto const& edge_a : edges_a)
+	{
+		for (auto const& edge_b : edges_b)
+		{
+			if (segments_intersect(edge_a.first, edge_a.second, edge_b.first, edge_b.second))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+
+bool DoDeeDum::ProjectedMesh::point_in_polygon(glm::vec2 const& p, uint32_t tri) const
+{
+	auto const& t_a = tris[tri];
+	
+	glm::vec2 const&  a0 = points[t_a.x];
+	glm::vec2 const&  a1 = points[t_a.y];
+	glm::vec2 const&  a2 = points[t_a.z];
+
+	return point_in_triangle(p, a0, a1, a2);
+}
+
+DoDeeDum::AABB2D DoDeeDum::ProjectedMesh::get_polygon_bounds(uint32_t tri_index) const
+{
+	auto const& tri = tris[tri_index];
+
+	AABB2D bounds;
+	bounds.min = {
+		std::min({points[tri.x].x, points[tri.y].x, points[tri.z].x}),
+		std::min({points[tri.x].y, points[tri.y].y, points[tri.z].y})
+	};
+	bounds.max = {
+		std::max({points[tri.x].x, points[tri.y].x, points[tri.z].x}),
+		std::max({points[tri.x].y, points[tri.y].y, points[tri.z].y})
+	};
+
+	return bounds;
 }

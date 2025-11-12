@@ -45,6 +45,8 @@ using Type = fx::gltf::Accessor::Type;
 
 	static int32_t GetComponentSizeInBytes(ComponentType componentType)
 	{
+		static auto constexpr SignedInt = ComponentType(int(ComponentType::UnsignedInt)-1);
+		
 		switch(componentType)
 		{
 		default:							throw std::invalid_argument("componentType");
@@ -52,7 +54,7 @@ using Type = fx::gltf::Accessor::Type;
 		case ComponentType::UnsignedByte:	return 1;
 		case ComponentType::Short:			return 2;
 		case ComponentType::UnsignedShort:	return 2;
-		case ComponentType::Int:			return 4;
+		case SignedInt: 	                return 4;
 		case ComponentType::UnsignedInt:	return 4;
 		case ComponentType::Float:			return 4;
 		}

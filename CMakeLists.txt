@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15)
 project(dodeedum VERSION 1.0.0 LANGUAGES CXX)
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -30,8 +30,6 @@ file(GLOB_RECURSE DODEEDUM_EXTENSION_HEADERS
 add_library(dodeedum STATIC
     ${DODEEDUM_SOURCES}
     ${DODEEDUM_HEADERS}
-    ${DODEEDUM_EXTENSION_SOURCES}
-    ${DODEEDUM_EXTENSION_HEADERS}
 )
 
 # Set include directories
@@ -41,7 +39,6 @@ target_include_directories(dodeedum
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/extensions
 )
 
 # Find and link GLM

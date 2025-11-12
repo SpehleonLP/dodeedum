@@ -212,7 +212,7 @@ glm::dvec4   DoDeeDum::MeshAttrib::readf(uint32_t index) const
     }
     
     uint8_t* base = (uint8_t*)src + offset;
-    glm::i64vec4 dst{0};
+    glm::dvec4 dst{0};
     
 	switch (type) {
         default:
