@@ -222,11 +222,17 @@ DoDeeDum::Silhouette::Measurement DoDeeDum::Silhouette::MeasureWidth(glm::vec2 c
     {
         for(auto j = i+1; j < points.size(); ++j)
         {
+			if(i == 1 && j == 8)
+			{
+				int break_point = 0;
+				++break_point;
+			}
+        
             // Find where the line segment between points[i] and points[j] 
             // crosses the line defined by point and dir
             
             glm::dvec2 segDir = glm::dvec2(points[j]) - glm::dvec2(points[i]);
-            glm::dvec2 toStart = glm::dvec2(points[i]) - glm::dvec2(point);
+            glm::dvec2 toStart = glm::dvec2(points[j]) - glm::dvec2(point);
             
             // Solve for intersection: point + t*dir = points[i] + s*segDir
             // This gives us: toStart + s*segDir = t*dir
