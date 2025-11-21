@@ -10,11 +10,12 @@ namespace DoDeeDum
 
 struct AABB2D;
 struct ProjectedMesh;
+struct DebugOut;
 
 class MeshEdges
 {
 public:
-	static MeshEdges Perimiter(ProjectedMesh const& mesh) { return MeshEdges(mesh, MeshEdges(mesh)); }
+	static MeshEdges Perimiter(ProjectedMesh const& mesh, DebugOut & out) { return MeshEdges(mesh, MeshEdges(mesh, out), out); }
 	
 	~MeshEdges() = default;
 
@@ -58,11 +59,12 @@ public:
 	
 	std::vector<glm::vec2> points;
 	std::vector<Edge>		edges;
+	glm::vec2 max{0}, min{0};
 	
 // get just the edges that are 
-	MeshEdges(ProjectedMesh const& mesh);
+	MeshEdges(ProjectedMesh const& mesh, DebugOut const& out);
 // trim overlaps, get just perimiters
-	MeshEdges(ProjectedMesh const& mesh, MeshEdges const& edges);
+	MeshEdges(ProjectedMesh const& mesh, MeshEdges const& edges, DebugOut const& out);
 	
 
 	std::vector<std::vector<uint32_t>> to_edge_list() const;

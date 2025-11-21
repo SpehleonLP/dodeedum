@@ -30,9 +30,8 @@ inline auto edge_get_v2(const std::pair<uint32_t, uint32_t>& e) { return std::ma
 DoDeeDum::Silhouette DoDeeDum::GetSilhouette(Input const& in, const char * path, const char * name)
 {	
 	static std::atomic<int> counter{0};
-	auto id = counter++;
 	
-	auto functional_projection = in.projection * 
+	glm::mat4 functional_projection = in.projection * 
 			glm::mat4(
 				in.scale.x, 0, 0, 0, 
 				0, in.scale.y, 0, 0, 
@@ -40,33 +39,31 @@ DoDeeDum::Silhouette DoDeeDum::GetSilhouette(Input const& in, const char * path,
 				0, 0, 0, 1);
 	
 	// functional_projection * scale * in.projection			
-	auto scale = functional_projection * glm::inverse(in.projection);
+	glm::mat4 scale = functional_projection * glm::inverse(in.projection);
+
+	DebugOut out{
+		.id_no=(name && path)? counter++ : 0,
+		.directory=path,
+		.name=name
+	};
+
+	ProjectedMesh projected(in.mesh, in.projection, out, in.joints);
+	(glm::vec2&)(functional_projection[3].x) += projected.translated_by;
 	
-	ProjectedMesh projected(in.mesh, in.projection, in.joints);
-	MeshEdges edges = MeshEdges::Perimiter(projected);
+	MeshEdges edges = MeshEdges::Perimiter(projected, out);
 	
 	for(auto & p : edges.points)
 	{
 		glm::vec4 v = scale * glm::vec4(p, 0, 1);
 		p = (glm::vec2&)v * (v.w? 1.f / v.w : 1.f);
 	}
-	
-	if(path && name)
-	{
-		char buffer[64];
-		if(snprintf(buffer, sizeof(buffer), "%s-edges-%d.obj", name, id) > 0)
-		{
-			edges.export_debug_OBJ(std::filesystem::path(path) / buffer);			
-		}
-	}	
-	
-	
+		
 	auto perimiter  = edges.GetPerimiter();	
 	
 	if(path && name)
 	{
 		char buffer[64];
-		if(snprintf(buffer, sizeof(buffer), "%s-perimiter-%d.obj", name, id) > 0)
+		if(snprintf(buffer, sizeof(buffer), "%s-perimiter-%d.obj", name, out.id_no) > 0)
 		{
 			::Export_Obj(std::filesystem::path(path) / buffer, edges.points, perimiter.indices, perimiter.loops);			
 		}

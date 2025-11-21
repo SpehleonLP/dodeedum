@@ -8,9 +8,20 @@
 #include <cfloat>
 
 
+std::filesystem::path DoDeeDum::DebugOut::file(const char * tag) const 
+{ 
+	char buffer[64];
+	if(snprintf(buffer, sizeof(buffer), "%s-%s-%d.obj", name, tag, id_no) > 0)
+	{
+		return std::filesystem::path(directory) / buffer;			
+	}
+	
+	return std::filesystem::path{};
+}
+	
 DoDeeDum::ProjectedMesh::~ProjectedMesh() = default;
 
-DoDeeDum::ProjectedMesh::ProjectedMesh(ProjectedMesh const& it, float cutoff)
+DoDeeDum::ProjectedMesh::ProjectedMesh(ProjectedMesh const& it, DebugOut const& out, float cutoff)
 {	
 	min = glm::vec2(FLT_MAX);
 	max = glm::vec2(-FLT_MAX);
@@ -133,9 +144,12 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(ProjectedMesh const& it, float cutoff)
 	}
 	
 	sort();
+	
+	if(out.empty() == false)
+		export_debug_OBJ(out.file("projection-cutoff"));
 }
 	
-DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, std::span<const uint32_t> joints)
+DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, DebugOut const& out, std::span<const uint32_t> joints)
 {
 	min = glm::vec2(FLT_MAX);
 	max = glm::vec2(-FLT_MAX);
@@ -191,7 +205,11 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 	if(min.x > max.x)
 		min = max = glm::vec2(0);
 		
+	translated_by = center_projection();;
 	sort();
+	
+	if(out.empty() == false)
+		export_debug_OBJ(out.file("projection"));
 }
 std::vector<std::vector<float>>	 DoDeeDum::GetSubsetWeights(Mesh const& mesh, std::span<const uint32_t> joints)
 {
@@ -303,7 +321,7 @@ std::vector<std::vector<bool>>  DoDeeDum::GetSubsetMarks(Mesh const& mesh, std::
 void DoDeeDum::ProjectedMesh::sort()
 {
 	std::vector<int> vertex_mapping = sort_vertices(points);
-	std::vector<int> deduplicate = deduplicate_vertices(points);
+	std::vector<int> deduplicate = deduplicate_vertices(points, glm::vec4(max - min, 0, 0));
 	
 	for(auto & t : tris)
 	{
@@ -501,6 +519,37 @@ bool DoDeeDum::ProjectedMesh::serialize(std::string const& filepath) const
 	return file.good();
 }
 
+void DoDeeDum::ProjectedMesh::export_debug_OBJ(std::filesystem::path const& path) const
+{
+	std::ofstream file(path);
+	if (!file.is_open())
+	{
+		throw std::system_error(errno, std::generic_category(), 
+		                        "Failed to open file: " + path.string());
+	}
+	
+	// Write vertices
+	for (const auto& point : points)
+	{
+		file << "v " << point.x << " " << point.y << " " << point.z << "\n";
+	}
+	
+	// Write edges as lines (OBJ line elements)
+	for (const auto& tri : tris)
+	{
+		// OBJ indices are 1-based
+		file << "f " << (tri.x + 1) << " " << (tri.y + 1) << " " << (tri.z + 1) << "\n";
+	}
+	
+	file.close();
+	
+	if (file.fail())
+	{
+		throw std::system_error(errno, std::generic_category(),
+		                        "Failed to write to file: " + path.string());
+	}
+}
+
 DoDeeDum::ProjectedMesh DoDeeDum::ProjectedMesh::deserialize(std::filesystem::path const& filepath)
 {
 	ProjectedMesh r;
@@ -634,4 +683,18 @@ DoDeeDum::AABB2D DoDeeDum::ProjectedMesh::get_polygon_bounds(uint32_t tri_index)
 	};
 
 	return bounds;
+}
+
+glm::vec2 DoDeeDum::ProjectedMesh::center_projection()
+{
+	glm::vec2 translation = (min + max)/2.f;
+	
+	for(auto i = 0u; i < points.size(); ++i)
+	{
+		(glm::vec2&)(points[i].x) -= translation;
+	}
+	
+	min -= translation;
+	max -= translation;
+	return -translation;
 }

@@ -31,12 +31,32 @@ bool AABB2D::contains_triangle(glm::vec2 const& v0, glm::vec2 const& v1, glm::ve
 	         tri_max_y < min.y || tri_min_y > max.y);
 }
 
+float distance_from_triangle(glm::dvec2 const& p, glm::dvec2 const& v0, glm::dvec2 const& v1, glm::dvec2 const& v2)
+{
+	auto denom = (v1.y - v2.y) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.y - v2.y);
+	
+	if (denom == 0)
+		return 10.0;  // Degenerate triangle
+	
+	auto a = ((v1.y - v2.y) * (p.x - v2.x) + (v2.x - v1.x) * (p.y - v2.y)) / denom;
+	auto b = ((v2.y - v0.y) * (p.x - v2.x) + (v0.x - v2.x) * (p.y - v2.y)) / denom;
+	auto c = 1.0 - a - b;
+	
+	a = std::abs(a * 2.0 - 1.0);
+	b = std::abs(b * 2.0 - 1.0);
+	c = std::abs(c * 2.0 - 1.0);
+	
+	return std::max({a, b, c}) - 1.0;
+}
+
 bool point_in_triangle(glm::dvec2 const& p, glm::dvec2 const& v0, glm::dvec2 const& v1, glm::dvec2 const& v2)
 {
 	auto denom = (v1.y - v2.y) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.y - v2.y);
 	
 	if (denom == 0)
 		return false;  // Degenerate triangle
+	
+	auto distance = distance_from_triangle(p, v0, v1, v2);
 	
 	auto a = ((v1.y - v2.y) * (p.x - v2.x) + (v2.x - v1.x) * (p.y - v2.y)) / denom;
 	auto b = ((v2.y - v0.y) * (p.x - v2.x) + (v0.x - v2.x) * (p.y - v2.y)) / denom;
@@ -50,7 +70,7 @@ bool point_in_triangle(glm::dvec2 const& p, glm::dvec2 const& v0, glm::dvec2 con
 
 bool segments_intersect(glm::dvec2 const& a0, glm::dvec2 const& a1, glm::dvec2 const& b0, glm::dvec2 const& b1)
 {
-	auto sign = [](float x) { return (x > 0.0f) - (x < 0.0f); };
+	auto same_sign = [](float x, float y) { return x * y >= 0; };
 
 	auto ccw = [](glm::dvec2 const& A, glm::dvec2 const& B, glm::dvec2 const& C) {
 		return (C.y - A.y) * (B.x - A.x) - (B.y - A.y) * (C.x - A.x);
@@ -61,11 +81,12 @@ bool segments_intersect(glm::dvec2 const& a0, glm::dvec2 const& a1, glm::dvec2 c
 	auto d3 = ccw(a0, a1, b0);
 	auto d4 = ccw(a0, a1, b1);
 
-	if (sign(d1) != sign(d2) && sign(d3) != sign(d4))
+	if (same_sign(d1, d2) == false && same_sign(d3, d4) == false)
 		return true;
 
 	// Check for collinear overlap
-	if (std::abs(d1) < 1e-10 && std::abs(d2) < 1e-10)
+	auto EPS = 1e-10;
+	if (std::abs(d1) < EPS && std::abs(d2) < EPS)
 	{
 		// Both segments on same line, check if they overlap
 		auto min_ax = std::min(a0.x, a1.x);
@@ -73,7 +94,7 @@ bool segments_intersect(glm::dvec2 const& a0, glm::dvec2 const& a1, glm::dvec2 c
 		auto min_bx = std::min(b0.x, b1.x);
 		auto max_bx = std::max(b0.x, b1.x);
 
-		return max_ax >= min_bx && max_bx >= min_ax;
+		return (max_ax - min_bx) > EPS && (max_bx - min_ax) > EPS;
 	}
 
 	return false;

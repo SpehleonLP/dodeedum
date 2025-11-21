@@ -19,25 +19,6 @@ static bool are_verts_same(glm::vec<2, T, q> const& a, glm::vec<2, T, q> const& 
 	static constexpr auto EPS = std::numeric_limits<T>::epsilon();
 	return (std::fabs(a.x - b.x) < EPS && std::fabs(a.y - b.y) < EPS);
 };
-						
-template<typename T, glm::qualifier q>
-static bool are_colinear(glm::vec<2, T, q> const& a, glm::vec<2, T, q> const& b, glm::vec<2, T, q> const& c) 
-{
-    // Three points are collinear if the cross product of vectors (b-a) and (c-a) is zero
-    // For 2D vectors, the cross product magnitude is: (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-    
-    auto v1 = b - a;
-    auto v2 = c - a;
-    
-    T cross = v1.x * v2.y - v1.y * v2.x;
-    
-    // Use epsilon comparison for floating point types
-    if constexpr (std::is_floating_point_v<T>) {
-        return glm::abs(cross) < glm::epsilon<T>();
-    } else {
-        return cross == T(0);
-    }
-};
 				
 struct MeshEdgeHelper
 {
@@ -60,7 +41,9 @@ struct MeshEdgeHelper
 
 };
 
-DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh)
+DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh, DebugOut const& out) :
+	min(mesh.min),
+	max(mesh.max)
 {
 	std::unordered_map<uint64_t, int> memo;
 
@@ -122,9 +105,11 @@ DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh)
 		
 		// skip internal edges
 		if((item.second & 0x03) != 0x03) 
-			edges.push_back(Edge{copy_vertex(e.first), copy_vertex(e.second), uint8_t(item.second)});
-			
+			edges.push_back(Edge{copy_vertex(e.first), copy_vertex(e.second), uint8_t(item.second)});		
 	}
+	
+	if(out.empty() == false)
+		export_debug_OBJ(out.file("pruned"));
 }
 
 namespace DoDeeDum
@@ -166,7 +151,9 @@ void check(ProjectedMesh const& mesh, MeshEdges const& edges)
 
 }
 
-DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh, MeshEdges const& edges)
+DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh, MeshEdges const& edges, DebugOut const& out) :
+	min(mesh.min),
+	max(mesh.max)
 {	
 	QuadTree tree(mesh);
 	tree.build();
@@ -177,24 +164,35 @@ DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh, MeshEdges const& edges
 			
 	for(auto i = 0u; i < edges.edges.size(); ++i)
 	{
-		glm::vec2 start = (glm::vec2&)edges.points[edges.edges[i].first];
-		glm::vec2 end = (glm::vec2&)edges.points[edges.edges[i].second];
+		glm::vec2 start = (glm::vec2&)edges.points[edges.edges[i].first ];
+		glm::vec2 end   = (glm::vec2&)edges.points[edges.edges[i].second];
 		
 		auto CountInCommon = [&](std::array<glm::vec2, 3> & tri_verts)
 		{
-			int count = 0;
+			bool count_end = 0;
+			bool count_start = 0;
 			
 			for(int j = 0; j < 3; ++j)
 			{
-				count += (tri_verts[j] == start || tri_verts[j] == end);
+				auto distance_start = std::max(
+					std::fabs(tri_verts[j].x - start.x), 
+					std::fabs(tri_verts[j].y - start.y));
+					
+				auto distance_end = std::max(
+					std::fabs(tri_verts[j].x - end.x), 
+					std::fabs(tri_verts[j].y - end.y));
+					
+				count_start |= (distance_start < DoDeeDum::EPS);
+				count_end |= (distance_end < DoDeeDum::EPS);
 			}
 		
-			return count;
+			return int(count_start)+int(count_end);
 		};
-			
+		
 		edge_segments.clear();
 		edge_segments.push_back({start, end});
 		
+		// it looks like the reason this fails is that de-duplication failed
 		tree.query_region(edges.get_polygon_bounds(i), [&](uint32_t tri_index)
 		{
 			const auto& tri = mesh.tris[tri_index];
@@ -206,6 +204,7 @@ DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh, MeshEdges const& edges
 			
 			if(CountInCommon(tri_verts) == 2)
 				return false;
+				
 			
 			helper.result.clear();
 			
@@ -233,6 +232,9 @@ DoDeeDum::MeshEdges::MeshEdges(ProjectedMesh const& mesh, MeshEdges const& edges
 	}	
 	
 	sort();
+	
+	if(out.empty() == false)
+		export_debug_OBJ(out.file("edges"));
 }
 	
 DoDeeDum::AABB2D DoDeeDum::MeshEdges::get_polygon_bounds(uint32_t a) const
@@ -277,7 +279,7 @@ void erase(std::vector<T> & vec, F1 & equals, F2 & should_keep)
 void DoDeeDum::MeshEdges::sort()
 {
 	std::vector<int> vertex_mapping = sort_vertices(points);
-	std::vector<int> deduplicate = deduplicate_vertices(points);
+	std::vector<int> deduplicate = deduplicate_vertices(points, max - min);
 	
 	for(auto & t : edges)
 	{
@@ -316,6 +318,9 @@ void DoDeeDum::MeshEdges::sort()
 void MeshEdgeHelper::clip_segment_outside_triangle(glm::vec2 p1, glm::vec2 p2, 
                                const std::array<glm::vec2, 3>& tri)
 {	
+//	float p1_distance = DoDeeDum::distance_from_triangle(p1, tri[0], tri[1], tri[2]);
+//	float p2_distance = DoDeeDum::distance_from_triangle(p2, tri[0], tri[1], tri[2]);
+	
 	// Check if endpoints are inside triangle
 	bool p1_inside = DoDeeDum::point_in_triangle(p1, tri[0], tri[1], tri[2]);
 	bool p2_inside = DoDeeDum::point_in_triangle(p2, tri[0], tri[1], tri[2]);
@@ -454,7 +459,6 @@ std::vector<std::vector<uint32_t>> DoDeeDum::MeshEdges::to_edge_list() const
 	return r;
 }
 
-
 std::unordered_map<uint64_t, std::pair<uint32_t, float>> DoDeeDum::MeshEdges::to_turn_list(std::vector<std::vector<uint32_t>> const& edge_list) const
 {
 	std::unordered_map<uint64_t, std::pair<uint32_t, float>> turn_list;
@@ -530,6 +534,7 @@ std::unordered_map<uint64_t, std::pair<uint32_t, float>> DoDeeDum::MeshEdges::to
 	
 	return turn_list;
 }
+
 
 struct DoDeeDum::MeshEdges::Perimiter DoDeeDum::MeshEdges::GetPerimiter()
 {

@@ -9,6 +9,9 @@
 namespace DoDeeDum
 {
 
+// considered to be in meters so use width of a single cell.
+static float constexpr EPS = 1e-5;
+
 struct Primitive;
 using Mesh = std::vector<Primitive>;
 
@@ -52,7 +55,7 @@ struct Silhouette
 	
 	inline Measurement MeasureWidth_PointRay(glm::vec2 const& axis, glm::vec2 const& point, glm::vec2 const& ray) const;
 	inline Measurement MeasureWidth_Segment(glm::vec2 const& axis, glm::vec2 const& begin, glm::vec2 const& end) const;
-	
+		
 	Measurement MeasureWidth(glm::vec2 const& axis, glm::vec2 const& point, glm::vec2 const& dir, double min = -1e200, double max = 1e200) const;
 	
 };

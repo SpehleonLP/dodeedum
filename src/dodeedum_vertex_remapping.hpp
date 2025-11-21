@@ -69,11 +69,20 @@ ulp_diff(T a, T b) {
 
 
 template<int N, typename T, glm::qualifier Q>
-std::vector<int> deduplicate_vertices(std::vector<glm::vec<N, T, Q>> & points)
+std::vector<int> deduplicate_vertices(std::vector<glm::vec<N, T, Q>> & points, glm::vec<N, T, Q> scale)
 {
+	(void)scale;
 	std::vector<int> deduplicated(points.size(), -1);
-	T constexpr EPS = std::numeric_limits<T>::epsilon();
-//	constexpr int MAX_ULP = 4;
+	
+	auto IsSame = [](T a, T b) -> bool
+	{
+		static T constexpr EPS = 1e-5;//std::numeric_limits<T>::epsilon();
+		static int constexpr MAX_ULP = 4;
+		auto delta = std::abs(a - b);
+		return (delta < EPS);// return false;
+	//	auto diff = ulp_diff(a, b);
+	//	return diff < MAX_ULP;
+	};
 	
 	uint32_t read, write;
 	for(read = 0, write = 0; read < points.size(); ++read)
@@ -83,16 +92,23 @@ std::vector<int> deduplicate_vertices(std::vector<glm::vec<N, T, Q>> & points)
 			
 		auto & t = points[read];
 		
+		if(std::fabs(t.y - 0.202458 ) < 0.01)
+		{
+			int break_point = 0;
+			++break_point;
+		
+		}
+		
 		for(uint32_t next = read+1; next < points.size(); ++next)
 		{	
-			if(std::fabs(t.y - points[next].y) > EPS)
+			if(IsSame(t.y, points[next].y) == false)
 			{
 				break;
 			}
 			
 			for(auto i = 0; i < N; ++i)
 			{
-				if(std::fabs((&t.x)[i] - (&points[next].x)[i]) > EPS)
+				if(IsSame((&t.x)[i], (&points[next].x)[i]) == false)
 				{
 					goto not_same;
 				}

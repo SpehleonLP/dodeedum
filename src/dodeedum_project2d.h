@@ -13,6 +13,16 @@ namespace DoDeeDum
 
 struct AABB2D;
 
+struct DebugOut
+{
+	int id_no{};
+	const char * directory{};
+	const char * name{};
+	
+	bool empty() const { return directory == 0L || name == 0L; };
+	std::filesystem::path file(const char * tag) const;
+};
+
 template<typename T> 
 inline std::array<T, 3> sort3(std::array<T, 3> const& values)
 {
@@ -43,9 +53,12 @@ bool GetIntersection(glm::vec2 & dst, const glm::dvec2 &a0,  const glm::dvec2 &a
 
 struct ProjectedMesh
 {
+	static ProjectedMesh Factory(Mesh const& mesh, glm::mat4 const& projection, DebugOut const& out, float cutoff = 0.5, std::span<const uint32_t> joints = {}) 
+		{ return ProjectedMesh(ProjectedMesh(mesh, projection, out, joints), out, cutoff); };
+
 	ProjectedMesh() = default;
-	ProjectedMesh(ProjectedMesh const&, float cutoff);
-	ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, std::span<const uint32_t> joints = {});
+	ProjectedMesh(ProjectedMesh const&, DebugOut const& out, float cutoff);
+	ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, DebugOut const& out, std::span<const uint32_t> joints = {});
 //	ProjectedMesh(Mesh const& mesh, glm::vec3 point, glm::vec3 normal, std::span<const uint32_t> joints = {});
 	~ProjectedMesh();
 	
@@ -56,15 +69,20 @@ struct ProjectedMesh
 	// then they are sorted by least maximum. 
 	std::vector<glm::uvec3> tris;	
 	
-	glm::vec2 min, max{};
+	glm::vec2 min{0}, max{0};
+	glm::vec2 translated_by{0};
 	
 	template<typename F>
 	void for_each_intersection(uint32_t A, uint32_t B, F const& f) const;
 	
 	float get_value_at_point(glm::vec2 const& point, uint32_t tri) const;
 	
+	glm::vec2 center_projection();
+	
 	// Serialization functions
 	bool serialize(std::string const& filepath) const;
+	void export_debug_OBJ(std::filesystem::path const&) const;
+	
 	static ProjectedMesh deserialize(std::filesystem::path const&);
 
 	bool   polygons_share_edge(uint32_t a, uint32_t b) const;

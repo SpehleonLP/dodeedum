@@ -11,6 +11,8 @@
 namespace DoDeeDum
 {
 
+float distance_from_triangle(glm::dvec2 const& p, glm::dvec2 const& v0, glm::dvec2 const& v1, glm::dvec2 const& v2);
+
 struct AABB2D
 {
 	glm::vec2 min;
