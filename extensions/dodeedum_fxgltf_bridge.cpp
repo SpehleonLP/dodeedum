@@ -132,15 +132,29 @@ static DoDeeDum::Primitive Primitive_Factory(const fx::gltf::Document& document,
     }
     
     auto position = MeshAttrib_Factory(document, positionIter->second);
-    auto joints = MeshAttrib_Factory(document, jointsIter->second);
-    auto weights = MeshAttrib_Factory(document, weightsIter->second);
     
     DoDeeDum::Primitive p = {};
     
      // Set up rintintin mesh structure
     p.position = ([position](uint32_t i) { return position.readf(i); });
-    p.joints = ([joints](uint32_t i) { return joints.readi(i); });
-    p.weights = ([weights](uint32_t i) { return weights.readf(i); });
+    
+    int counter = 0;
+    while(jointsIter != primitive.attributes.end() 
+		&& weightsIter != primitive.attributes.end() )
+    {
+		auto joints = MeshAttrib_Factory(document, jointsIter->second);
+		auto weights = MeshAttrib_Factory(document, weightsIter->second);
+    
+		p.skin.push_back({
+			.joints=([joints](uint32_t i) { return joints.readi(i); }),
+			.weights=([weights](uint32_t i) { return weights.readf(i); })
+		});
+		
+		++counter;
+		jointsIter = primitive.attributes.find("JOINTS_" + std::to_string(counter));
+		weightsIter = primitive.attributes.find("WEIGHTS_" + std::to_string(counter));
+    }
+    
     
 	p.indices.no_verts = document.accessors[positionIter->second].count;
     p.indices.geometry_type = gltfToUtilityGeometry(primitive.mode);

@@ -1,6 +1,7 @@
 #ifndef DODEEDUM_PROJECT2D_H
 #define DODEEDUM_PROJECT2D_H
 #include <filesystem>
+#include <functional>
 #include <glm/vec3.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/ext/vector_float2.hpp>
@@ -53,12 +54,12 @@ bool GetIntersection(glm::vec2 & dst, const glm::dvec2 &a0,  const glm::dvec2 &a
 
 struct ProjectedMesh
 {
-	static ProjectedMesh Factory(Mesh const& mesh, glm::mat4 const& projection, DebugOut const& out, float cutoff = 0.5, std::span<const uint32_t> joints = {}) 
-		{ return ProjectedMesh(ProjectedMesh(mesh, projection, out, joints), out, cutoff); };
+	static ProjectedMesh Factory(Mesh const& mesh, glm::mat4 const& projection, std::function<glm::mat4(Primitive const&, int index)> const& GetSkinningTransform, DebugOut const& out, float cutoff = 0.5, std::span<const uint32_t> joints = {}) 
+		{ return ProjectedMesh(ProjectedMesh(mesh, projection, GetSkinningTransform, out, joints), out, cutoff); };
 
 	ProjectedMesh() = default;
 	ProjectedMesh(ProjectedMesh const&, DebugOut const& out, float cutoff);
-	ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, DebugOut const& out, std::span<const uint32_t> joints = {});
+	ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, std::function<glm::mat4(Primitive const&, int index)>  const& GetSkinningTransform, DebugOut const& out, std::span<const uint32_t> joints = {});
 //	ProjectedMesh(Mesh const& mesh, glm::vec3 point, glm::vec3 normal, std::span<const uint32_t> joints = {});
 	~ProjectedMesh();
 	

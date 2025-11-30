@@ -149,7 +149,10 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(ProjectedMesh const& it, DebugOut const& 
 		export_debug_OBJ(out.file("projection-cutoff"));
 }
 	
-DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projection, DebugOut const& out, std::span<const uint32_t> joints)
+DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, 
+	glm::mat4 const& projection, 
+	std::function<glm::mat4(Primitive const&, int index)> const& GetSkinningTransform,
+	DebugOut const& out, std::span<const uint32_t> joints)
 {
 	min = glm::vec2(FLT_MAX);
 	max = glm::vec2(-FLT_MAX);
@@ -175,8 +178,15 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 		
 			float weight = weights.empty()? 1.0 : (w? w[v] : 0.0);
 			
-			glm::vec3 pos = p.position(v);
-			glm::vec4 vert = projection * glm::vec4(pos, 1.f);
+			glm::vec4 pos = glm::vec4(glm::vec3(p.position(v)), 1);
+			
+			if(GetSkinningTransform)
+			{
+				auto transform = GetSkinningTransform(mesh[i], v);
+				pos = transform * pos;
+			}
+			
+			glm::vec4 vert = projection * pos;
 			vert *= vert.w? 1.0 / vert.w : 1.0;
 			
 			vertex_mapping[v] = points.size();
@@ -211,6 +221,8 @@ DoDeeDum::ProjectedMesh::ProjectedMesh(Mesh const& mesh, glm::mat4 const& projec
 	if(out.empty() == false)
 		export_debug_OBJ(out.file("projection"));
 }
+
+
 std::vector<std::vector<float>>	 DoDeeDum::GetSubsetWeights(Mesh const& mesh, std::span<const uint32_t> joints)
 {
 	std::vector<std::vector<float>>	 r;
@@ -242,20 +254,26 @@ std::vector<std::vector<float>>	 DoDeeDum::GetSubsetWeights(Mesh const& mesh, st
 		
 		for(auto i = 0u; i < weights.size(); ++i)
 		{
-			glm::uvec4 joints0 = p.joints(i);
-			glm::vec4  weights0 = p.weights(i);
-			
 			float total_weight = 0.f;
 			
 			if(joint_mask.empty())
 				total_weight = 1.0;
 			else
 			{
-				if(joints0.x < joint_mask.size() && joint_mask[joints0.x])	total_weight += weights0.x; 
-				if(joints0.y < joint_mask.size() && joint_mask[joints0.y])	total_weight += weights0.y; 
-				if(joints0.z < joint_mask.size() && joint_mask[joints0.z])	total_weight += weights0.z; 
-				if(joints0.w < joint_mask.size() && joint_mask[joints0.w])	total_weight += weights0.w; 
+			
+				for(auto sk : p.skin)
+				{
+					glm::uvec4 joints0 = sk.joints(i);
+					glm::vec4  weights0 = sk.weights(i);
+			
+					if(joints0.x < joint_mask.size() && joint_mask[joints0.x])	total_weight += weights0.x; 
+					if(joints0.y < joint_mask.size() && joint_mask[joints0.y])	total_weight += weights0.y; 
+					if(joints0.z < joint_mask.size() && joint_mask[joints0.z])	total_weight += weights0.z; 
+					if(joints0.w < joint_mask.size() && joint_mask[joints0.w])	total_weight += weights0.w; 
+				}
 			}
+			
+			
 			
 			weights[i] = total_weight;
 			non_zero |= (total_weight != 0);

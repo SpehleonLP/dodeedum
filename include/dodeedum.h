@@ -1,6 +1,7 @@
 #ifndef DODEEDUM_H
 #define DODEEDUM_H
 #include <filesystem>
+#include <functional>
 #include <glm/vec3.hpp>
 #include <glm/mat4x4.hpp>
 #include <span>
@@ -64,6 +65,7 @@ struct Input
 {
 	Mesh const& mesh;
 	glm::mat4 projection;
+	std::function<glm::mat4(Primitive const& primitive, uint32_t vertex)> pose;
 	glm::vec3 scale{1.0, 1.0, 1.0};
 	// skinning weights below this are cut off. 
 	float   cutoff{0.5};

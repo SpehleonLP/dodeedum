@@ -47,7 +47,7 @@ DoDeeDum::Silhouette DoDeeDum::GetSilhouette(Input const& in, const char * path,
 		.name=name
 	};
 
-	ProjectedMesh projected(in.mesh, in.projection, out, in.joints);
+	ProjectedMesh projected(in.mesh, in.projection, in.pose, out, in.joints);
 	(glm::vec2&)(functional_projection[3].x) += projected.translated_by;
 	
 	MeshEdges edges = MeshEdges::Perimiter(projected, out);

@@ -20,9 +20,14 @@ struct Tri
 
 struct Vert
 {
+	struct Skinning
+	{
+		int64_t joint;
+		double    weight;
+	};
+
 	glm::dvec3 position;
-	glm::uvec4 joints;
-	glm::vec4  weights;
+	std::vector<Skinning> skinning;
 };
 
 
@@ -143,79 +148,47 @@ struct MeshIndices
 struct Primitive
 {
 	std::function<glm::dvec4(uint32_t)>   position;
-	std::function<glm::i64vec4(uint32_t)> joints;
-	std::function<glm::dvec4(uint32_t)>   weights;
+	
+	struct Skin
+	{
+		std::function<glm::i64vec4(uint32_t)> joints;
+		std::function<glm::dvec4(uint32_t)>   weights;
+	};
+		
+	std::vector<Skin> skin;
 	MeshIndices indices;
 	bool        flipNormals{false};
 	bool        isDoubleSided{true};
 	bool        hasAlpha{false};
 	
     template<typename F>
-    void for_each_tri(F const& func, uint32_t thread_id = 0, uint32_t no_threads = 1) const;
-    template<typename F>
     void for_each_vertex(F const& func, uint32_t thread_id = 0, uint32_t no_threads = 1) const;
 };
-
-
-template<typename F>
-void Primitive::for_each_tri(F const& func, uint32_t thread_id, uint32_t no_threads) const
-{
-	indices.for_each_index([&](glm::uvec3 tri) -> bool
-	{
-		if(flipNormals) std::swap(tri.x, tri.y);
-		
-		Tri t;
-		
-		std::array<glm::uvec3, 3> joints;
-		std::array<glm::vec4, 3> weights;
-		
-		t.positions[0] = this->position(tri.x); joints[0] = this->joints(tri.x); weights[0] = this->joints(tri.x);
-		t.positions[1] = this->position(tri.y); joints[1] = this->joints(tri.y); weights[1] = this->joints(tri.y);
-		t.positions[2] = this->position(tri.z); joints[2] = this->joints(tri.z); weights[2] = this->joints(tri.z);
-		
-		for(uint32_t v = 0; v < 3; ++v)
-		{
-			for(uint32_t j = 0; j < 3; ++j)
-			{
-				if(weights[v][j] == 0)
-					continue;
-					
-				t.weights[v] = weights[v][j];
-				t.joint = joints[v][j];
-				
-				for(uint32_t v1 = v+1; v1 < 3; ++v1)
-				{							
-					for(uint32_t j1 = 0; j1 < 3; ++j1)
-					{
-						if(joints[v1][j1] == t.joint)
-						{
-							t.weights[v1] = weights[v1][j1];
-							// don't process same joint again.
-							weights[v1][j1] = 0;
-							break;
-						}
-					}
-				}
-			
-				if(func(t))
-					return true;
-			}
-		}
-		
-		return false;
-	}, thread_id, no_threads);
-}
 
 template<typename F>
 void Primitive::for_each_vertex(F const& func, uint32_t thread_id, uint32_t no_threads) const
 {
+	Vert v;
 	indices.for_each_index([&](uint32_t index) -> bool
 	{
-		Vert v;
 		v.position = this->position(index);
-		v.joints = this->joints(index);
-		v.weights = this->weights(index);
-	
+		
+		v.skinning.clear();
+		
+		for(auto & sk : this->skin)
+		{
+			auto j = sk.joints(index);
+			auto w = sk.weights(index);
+			
+			for(auto i = 0; i < 4; ++i)
+			{
+				if(w[i])
+				{
+					v.skinning.push_back({.joint=j[i], .weight=w[i]});
+				}
+			}
+		}
+		
 		return func(v);
 	}, thread_id, no_threads);
 }
