@@ -65,8 +65,8 @@ struct DualQuatScaleSkinning
 	
 	// Helper: blend dual quaternions based on skinning weights
 	static DualQuat blend_dualquats(
-		std::vector<DualQuat> const& dualquats,
-		std::vector<Vert::Skinning> const& skinning
+		std::span<const DualQuat> dualquats,
+		std::span<const Vert::Skinning> skinning
 	);
 	
 	// Helper: blend scales linearly

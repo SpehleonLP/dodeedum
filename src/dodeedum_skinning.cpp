@@ -183,8 +183,8 @@ glm::mat4 DoDeeDum::DualQuatScaleSkinning::operator()(Primitive const& primitive
 }
 
 DoDeeDum::DualQuat DoDeeDum::DualQuatScaleSkinning::blend_dualquats(
-	std::vector<DualQuat> const& dualquats,
-	std::vector<Vert::Skinning> const& skinning)
+	std::span<const DualQuat> dualquats,
+	std::span<const Vert::Skinning> skinning)
 {
 	if (skinning.empty())
 		return DualQuat();
