@@ -11,7 +11,7 @@ using Type = fx::gltf::Accessor::Type;
     const fx::gltf::Document* document;
     const fx::gltf::Accessor* accessor;
     const fx::gltf::BufferView* bufferView;
-    const uint8_t* data;
+    const std::byte* data;
     
     ComponentType componentType{};
     Type type{};
